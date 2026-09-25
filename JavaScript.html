@@ -1,0 +1,1450 @@
+<script>
+  let currentUser = JSON.parse(sessionStorage.getItem('baterai_user')) || null;
+  let autoRefreshInterval = null;
+  let idleTimer = null;
+  const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+
+  const bulans = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+  
+  let globalProdiList = [];
+  let cachedAdminData = null;
+  let isUserPayDropdownLoaded = false;
+
+  const paginationState = {
+    'table-user-history': { currentPage: 1, pageSize: 10, searchKeyword: '', rawData: [] },
+    'table-user-monitor': { currentPage: 1, pageSize: 5, searchKeyword: '', rawData: [] },
+    'table-user-alokasi': { currentPage: 1, pageSize: 10, searchKeyword: '', rawData: [] },
+    'table-admin-riwayat': { currentPage: 1, pageSize: 10, searchKeyword: '', rawData: [] },
+    'table-input-hasil': { currentPage: 1, pageSize: 10, searchKeyword: '', rawData: [] },
+    'table-alokasi': { currentPage: 1, pageSize: 10, searchKeyword: '', rawData: [] },
+    'table-users': { currentPage: 1, pageSize: 10, searchKeyword: '', rawData: [] },
+    'table-monitor': { currentPage: 1, pageSize: 10, searchKeyword: '', rawData: [] },
+    'table-preview-iuran': { currentPage: 1, pageSize: 10, searchKeyword: '', rawData: [] },
+    'table-preview-alokasi': { currentPage: 1, pageSize: 10, searchKeyword: '', rawData: [] },
+    'table-pendaftar-mhs': { currentPage: 1, pageSize: 10, searchKeyword: '', rawData: [] },
+    'table-periode-beasiswa': { currentPage: 1, pageSize: 10, searchKeyword: '', rawData: [] },
+    'table-master-prodi': { currentPage: 1, pageSize: 10, searchKeyword: '', rawData: [] }
+  };
+
+  document.addEventListener('DOMContentLoaded', function() {
+    initUI();
+    if (currentUser) {
+      restoreSession();
+    } else {
+      showLoginView();
+    }
+  });
+
+  function resetIdleTimer() {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (currentUser) {
+      idleTimer = setTimeout(() => {
+        Swal.fire({ icon: 'warning', title: 'Sesi Berakhir', text: 'Anda tidak aktif selama 30 menit. Sistem otomatis logout.' }).then(() => logout());
+      }, IDLE_TIMEOUT_MS);
+    }
+  }
+
+  ['mousemove', 'keydown', 'click', 'scroll'].forEach(evt => window.addEventListener(evt, resetIdleTimer, false));
+
+  function initUI() {
+    const selectTahun = document.getElementById('select-tahun-pay');
+    const pdfStartTahun = document.getElementById('pdf-start-tahun');
+    const pdfEndTahun = document.getElementById('pdf-end-tahun');
+    const selectMonitorTahun = document.getElementById('select-monitor-tahun');
+
+    if (selectTahun) {
+      selectTahun.innerHTML = ''; pdfStartTahun.innerHTML = ''; pdfEndTahun.innerHTML = ''; selectMonitorTahun.innerHTML = '';
+      for (let y = 2026; y <= 2040; y++) {
+        selectTahun.innerHTML += `<option value="${y}">${y}</option>`;
+        pdfStartTahun.innerHTML += `<option value="${y}">${y}</option>`;
+        pdfEndTahun.innerHTML += `<option value="${y}">${y}</option>`;
+        selectMonitorTahun.innerHTML += `<option value="${y}">${y}</option>`;
+      }
+    }
+
+    const pdfStart = document.getElementById('pdf-start-bulan');
+    const pdfEnd = document.getElementById('pdf-end-bulan');
+    if (pdfStart && pdfEnd) {
+      pdfStart.innerHTML = ''; pdfEnd.innerHTML = '';
+      bulans.forEach((b) => { pdfStart.innerHTML += `<option value="${b}">${b}</option>`; pdfEnd.innerHTML += `<option value="${b}">${b}</option>`; });
+      pdfEnd.value = 'Desember';
+    }
+
+    const containerBulan = document.getElementById('checkbox-bulan-container');
+    if (containerBulan) {
+      containerBulan.innerHTML = '';
+      bulans.forEach((b, idx) => {
+        containerBulan.innerHTML += `
+          <div class="col-md-3 col-6 mb-2">
+            <div class="form-check">
+              <input class="form-check-input chk-bulan" type="checkbox" value="${b}" id="chk-${idx}">
+              <label class="form-check-label" for="chk-${idx}">${b}</label>
+            </div>
+          </div>
+        `;
+      });
+    }
+    loadProdiGlobal();
+  }
+
+  function loadProdiGlobal() {
+    google.script.run.withSuccessHandler(list => {
+      globalProdiList = list || [];
+      document.querySelectorAll('.select-prodi-options').forEach(select => {
+        select.innerHTML = '';
+        globalProdiList.forEach(p => select.innerHTML += `<option value="${p.nama}">${p.nama}</option>`);
+      });
+    }).getProdiList();
+  }
+
+  function toggleNominalInput(selectElement) {
+    const containerManual = document.getElementById('container-nominal-manual');
+    const inputManual = document.getElementById('pay-nominal-manual');
+    if (selectElement.value === 'lainnya') {
+      containerManual.classList.remove('d-none');
+      inputManual.setAttribute('required', 'true');
+    } else {
+      containerManual.classList.add('d-none');
+      inputManual.removeAttribute('required');
+    }
+  }
+
+  function handleLogin(e) {
+    e.preventDefault();
+    const u = document.getElementById('login-username').value;
+    const p = document.getElementById('login-password').value;
+
+    google.script.run.withSuccessHandler(res => {
+      if (res.success) {
+        currentUser = res.user;
+        sessionStorage.setItem('baterai_user', JSON.stringify(currentUser));
+        restoreSession();
+      } else {
+        Swal.fire('Gagal', res.message, 'error');
+      }
+    }).loginUser(u, p);
+  }
+
+  function restoreSession() {
+    document.getElementById('view-login').classList.add('d-none');
+    document.getElementById('header-nav').classList.remove('d-none');
+    document.getElementById('user-display').innerText = currentUser.nama;
+    document.getElementById('role-display').innerText = currentUser.role.toUpperCase();
+
+    if (currentUser.role === 'mahasiswa') {
+      document.getElementById('view-mahasiswa').classList.remove('d-none');
+      document.getElementById('view-user').classList.add('d-none');
+      document.getElementById('view-admin').classList.add('d-none');
+      loadMahasiswaDashboard();
+    } else if (currentUser.role === 'user') {
+      document.getElementById('view-user').classList.remove('d-none');
+      document.getElementById('view-mahasiswa').classList.add('d-none');
+      document.getElementById('view-admin').classList.add('d-none');
+      loadUserData();
+    } else if (currentUser.role === 'admin' || currentUser.role === 'superadmin') {
+      document.getElementById('view-admin').classList.remove('d-none');
+      document.getElementById('view-user').classList.add('d-none');
+      document.getElementById('view-mahasiswa').classList.add('d-none');
+
+      // Tampilkan Menu Khusus Superadmin
+      if (currentUser.role === 'superadmin') {
+        document.getElementById('nav-item-periode').classList.remove('d-none');
+        document.getElementById('nav-item-prodi').classList.remove('d-none');
+      } else {
+        document.getElementById('nav-item-periode').classList.add('d-none');
+        document.getElementById('nav-item-prodi').classList.add('d-none');
+      }
+      loadAdminData();
+    }
+
+    if (!autoRefreshInterval) autoRefreshInterval = setInterval(refreshData, 15000);
+    resetIdleTimer();
+  }
+
+  function logout() {
+    sessionStorage.removeItem('baterai_user');
+    currentUser = null;
+    isUserPayDropdownLoaded = false;
+    if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+    if (idleTimer) clearTimeout(idleTimer);
+    showLoginView();
+  }
+
+  function showLoginView() {
+    document.getElementById('header-nav').classList.add('d-none');
+    document.getElementById('view-user').classList.add('d-none');
+    document.getElementById('view-admin').classList.add('d-none');
+    document.getElementById('view-mahasiswa').classList.add('d-none');
+    document.getElementById('view-login').classList.remove('d-none');
+    document.getElementById('form-login').reset();
+  }
+
+  function refreshData() {
+    document.getElementById('refresh-indicator').style.display = 'block';
+    if (currentUser && currentUser.role === 'mahasiswa') loadMahasiswaDashboard(true);
+    else if (currentUser && currentUser.role === 'user') loadUserData(true);
+    else if (currentUser) loadAdminData(true);
+  }
+
+  function hideRefreshIndicator() {
+    setTimeout(() => { document.getElementById('refresh-indicator').style.display = 'none'; }, 500);
+  }
+
+  function showModalRegisterMhs() {
+    let optionsProdi = globalProdiList.map(p => `<option value="${p.nama}">${p.nama}</option>`).join('');
+
+    Swal.fire({
+      title: '<i class="bi bi-person-plus-fill text-success me-2"></i>Pendaftaran Akun Mahasiswa',
+      width: '650px',
+      html: `
+        <div class="row g-3 text-start">
+          <div class="col-md-6"><label class="form-label fw-bold">NRP Mahasiswa</label><input id="swal-mhs-nrp" class="form-control" placeholder="3120600001" required></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Nama Lengkap</label><input id="swal-mhs-nama" class="form-control" placeholder="Nama lengkap" required></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Username Login</label><input id="swal-mhs-uname" class="form-control" placeholder="Username" required></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Password</label><input id="swal-mhs-pass" type="password" class="form-control" placeholder="Password" required></div>
+          <div class="col-md-6"><label class="form-label fw-bold">No. WhatsApp</label><input id="swal-mhs-nowa" class="form-control" placeholder="08123456789" required></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Semester</label><select id="swal-mhs-sem" class="form-select"><option value="1">Semester 1</option><option value="2">Semester 2</option><option value="3">Semester 3</option><option value="4">Semester 4</option><option value="5">Semester 5</option><option value="6">Semester 6</option><option value="7">Semester 7</option><option value="8">Semester 8</option></select></div>
+          <div class="col-12"><label class="form-label fw-bold">Program Studi</label><select id="swal-mhs-prodi" class="form-select">${optionsProdi}</select></div>
+        </div>
+      `,
+      showCancelButton: true, confirmButtonText: 'Daftar Akun', confirmButtonColor: '#198754',
+      preConfirm: () => {
+        return {
+          nrp: document.getElementById('swal-mhs-nrp').value, nama: document.getElementById('swal-mhs-nama').value,
+          username: document.getElementById('swal-mhs-uname').value, password: document.getElementById('swal-mhs-pass').value,
+          noWa: document.getElementById('swal-mhs-nowa').value, semester: document.getElementById('swal-mhs-sem').value,
+          prodi: document.getElementById('swal-mhs-prodi').value
+        }
+      }
+    }).then(result => {
+      if (result.isConfirmed) {
+        google.script.run.withSuccessHandler(res => {
+          if (res.success) {
+            Swal.fire({
+              icon: 'success', title: 'Pendaftaran Akun Berhasil!',
+              html: `<p class="mb-3">${res.message}</p><a href="${res.waLink}" target="_blank" class="btn btn-success fw-bold"><i class="bi bi-whatsapp"></i> Konfirmasi Aktivasi WA</a>`
+            });
+          } else { Swal.fire('Gagal', res.message, 'error'); }
+        }).registerMahasiswa(result.value);
+      }
+    });
+  }
+
+  // --- DASHBOARD MAHASISWA ---
+  function loadMahasiswaDashboard(silent = false) {
+    google.script.run.withSuccessHandler(data => {
+      const mhs = data.mahasiswa;
+      const act = data.activePeriode;
+      const reg = data.pendaftaran;
+
+      if (mhs) {
+        document.getElementById('mhs-profile-nrp').innerText = mhs.nrp || '-';
+        document.getElementById('mhs-profile-nama').innerText = mhs.nama || '-';
+        document.getElementById('mhs-profile-username').innerText = mhs.username || '-';
+        document.getElementById('mhs-profile-prodi').innerText = mhs.prodi || '-';
+        document.getElementById('mhs-profile-semester').innerText = 'Semester ' + (mhs.semester || '-');
+        document.getElementById('mhs-profile-nowa').innerText = mhs.noWa || '-';
+        document.getElementById('mhs-profile-tgl-daftar').innerText = mhs.tanggalDaftar || '-';
+
+        const badgeAkun = document.getElementById('mhs-profile-status-akun');
+        badgeAkun.innerText = mhs.statusAkun;
+        badgeAkun.className = (mhs.statusAkun === 'Aktif') ? 'badge bg-success' : 'badge bg-warning text-dark';
+      }
+
+      const periodeBadge = document.getElementById('mhs-active-periode-badge');
+      if (act) {
+        periodeBadge.innerText = 'Periode Aktif: ' + act.nama;
+        periodeBadge.className = 'badge bg-warning text-dark fs-6';
+      } else {
+        periodeBadge.innerText = 'TIDAK ADA PERIODE AKTIF';
+        periodeBadge.className = 'badge bg-danger fs-6';
+      }
+
+      const cardForm = document.getElementById('card-form-pendaftaran-mhs');
+      const statusContainer = document.getElementById('mhs-status-announcement');
+
+      if (reg) {
+        cardForm.classList.add('d-none');
+
+        if (reg.statusBeasiswa === 'Diterima') {
+          statusContainer.innerHTML = `
+            <div class="alert alert-success border-success shadow-sm p-4 text-center">
+              <i class="bi bi-trophy-fill fs-1 text-success mb-2 d-block"></i>
+              <h4 class="fw-bold text-success">SELAMAT! Anda Dinyatakan DITERIMA</h4>
+              <p class="mb-2 fs-6">Selamat kepada <strong>${mhs.nama}</strong> (${mhs.nrp}). Anda resmi menjadi penerima beasiswa <strong>BATERAI JTE</strong> Periode ${act.nama}.</p>
+              <a href="https://drive.google.com/file/d/${reg.fileBerkasId}/view" target="_blank" class="btn btn-outline-success btn-sm fw-bold"><i class="bi bi-file-earmark-pdf"></i> Lihat Berkas PDF Terkirim (${reg.tanggalSubmit})</a>
+            </div>
+          `;
+        } else if (reg.statusBeasiswa === 'Belum Berkesempatan') {
+          statusContainer.innerHTML = `
+            <div class="alert alert-warning border-warning shadow-sm p-4 text-center">
+              <i class="bi bi-info-circle-fill fs-1 text-warning mb-2 d-block"></i>
+              <h4 class="fw-bold text-dark">Mohon Maaf, Anda Belum Berkesempatan</h4>
+              <p class="mb-2 fs-6">Terima kasih atas partisipasi <strong>${mhs.nama}</strong> (${mhs.nrp}). Anda belum berkesempatan pada Periode ${act.nama}. Tetap semangat!</p>
+              <small class="text-muted">Formulir pendaftaran akan terbuka kembali saat periode beasiswa semester berikutnya dibuka.</small>
+            </div>
+          `;
+        } else {
+          statusContainer.innerHTML = `
+            <div class="alert alert-info border-info shadow-sm p-4 text-center">
+              <i class="bi bi-check-circle-fill fs-1 text-info mb-2 d-block"></i>
+              <h4 class="fw-bold text-dark">Pendaftaran Berhasil Dikirim & Dalam Proses Seleksi</h4>
+              <p class="mb-2 fs-6">Berkas pendaftaran Anda untuk Periode <strong>${act.nama}</strong> telah tersimpan dan sedang diverifikasi oleh Tim Panitia.</p>
+              <a href="https://drive.google.com/file/d/${reg.fileBerkasId}/view" target="_blank" class="btn btn-outline-primary btn-sm fw-bold"><i class="bi bi-file-earmark-pdf text-danger"></i> Lihat Berkas PDF Terkirim (${reg.tanggalSubmit})</a>
+            </div>
+          `;
+        }
+      } else {
+        cardForm.classList.remove('d-none');
+        document.getElementById('mhs-input-ipk').value = '';
+        document.getElementById('mhs-input-ips').value = '';
+        document.getElementById('mhs-input-ukt').value = '';
+        document.getElementById('mhs-input-file-pdf').setAttribute('required', 'true');
+        document.getElementById('mhs-berkas-status').innerHTML = '';
+
+        if (act) {
+          statusContainer.innerHTML = `
+            <div class="alert alert-primary border shadow-sm p-3 text-center">
+              <i class="bi bi-bell-fill fs-3 text-warning mb-1 d-block"></i>
+              <h6 class="fw-bold text-dark mb-1">Pendaftaran Beasiswa ${act.nama} Telah Dibuka</h6>
+              <p class="mb-0 small">Silahkan isi data IPK, IPS, UKT, dan upload berkas PDF pendaftaran Anda pada form langkah 2 di bawah.</p>
+            </div>
+          `;
+        } else {
+          cardForm.classList.add('d-none');
+          statusContainer.innerHTML = `
+            <div class="alert alert-secondary border shadow-sm p-4 text-center">
+              <i class="bi bi-clock-history fs-2 text-secondary mb-2 d-block"></i>
+              <h5 class="fw-bold text-dark">Pendaftaran Beasiswa Belum Dibuka</h5>
+              <p class="mb-0 small text-muted">Saat ini tidak ada periode beasiswa yang aktif. Formulir akan terbuka otomatis ketika periode beasiswa dibuka oleh admin.</p>
+            </div>
+          `;
+        }
+      }
+
+      const dlContainer = document.getElementById('container-download-form');
+      if (data.formTemplateFileId && data.formTemplateFileId.trim() !== '') {
+        dlContainer.innerHTML = `
+          <a href="https://drive.google.com/uc?export=download&id=${data.formTemplateFileId}" target="_blank" class="btn btn-outline-primary btn-sm fw-bold">
+            <i class="bi bi-file-earmark-word-fill me-1"></i> Download Formulir Pendaftaran (.DOCX)
+          </a>
+        `;
+      } else {
+        dlContainer.innerHTML = `<span class="badge bg-secondary"><i class="bi bi-exclamation-circle me-1"></i> Formulir pendaftaran (.DOCX) belum diunggah oleh Admin.</span>`;
+      }
+
+      if (silent) hideRefreshIndicator();
+    }).getMahasiswaDashboardData(currentUser.id);
+  }
+
+  function handleSubmitPendaftaranMhs(e) {
+    e.preventDefault();
+    const ipk = document.getElementById('mhs-input-ipk').value;
+    const ips = document.getElementById('mhs-input-ips').value;
+    const ukt = document.getElementById('mhs-input-ukt').value;
+    const fileInput = document.getElementById('mhs-input-file-pdf');
+
+    if (!fileInput.files.length) {
+      Swal.fire('Peringatan', 'Silahkan pilih file berkas PDF pendaftaran!', 'warning');
+      return;
+    }
+
+    const btn = document.getElementById('btn-submit-mhs-reg');
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Menyimpan...`;
+
+    const file = fileInput.files[0];
+    if (file.type !== 'application/pdf') {
+      Swal.fire('Peringatan', 'File berkas pendaftaran harus berformat PDF!', 'warning');
+      btn.disabled = false; btn.innerHTML = `<i class="bi bi-send-fill me-1"></i> Simpan & Kirim Pendaftaran Periode Ini`;
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = function(evt) {
+      const fileData = {
+        base64: evt.target.result.split(',')[1],
+        mimeType: file.type,
+        fileName: `BERKAS_BEASISWA_${currentUser.nrp}_${file.name}`
+      };
+
+      google.script.run.withSuccessHandler(res => {
+        btn.disabled = false; btn.innerHTML = `<i class="bi bi-send-fill me-1"></i> Simpan & Kirim Pendaftaran Periode Ini`;
+        if (res.success) {
+          Swal.fire('Berhasil', res.message, 'success');
+          loadMahasiswaDashboard();
+        } else { Swal.fire('Gagal', res.message, 'error'); }
+      }).submitPendaftaranBeasiswa(currentUser.id, ipk, ips, ukt, fileData);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  // --- DASHBOARD ADMIN & SUPERADMIN ---
+  function loadAdminData(silent = false) {
+    google.script.run.withSuccessHandler(data => {
+      cachedAdminData = data;
+      globalProdiList = data.prodiList || [];
+
+      document.getElementById('admin-total-masuk').innerText = formatRupiah(data.totalMasuk);
+      document.getElementById('admin-total-keluar').innerText = formatRupiah(data.totalKeluar);
+      document.getElementById('admin-saldo-akhir').innerText = formatRupiah(data.saldoKasAkhir);
+
+      const actTag = document.getElementById('admin-active-periode-tag');
+      if (data.activePeriode) actTag.innerText = 'Periode Aktif: ' + data.activePeriode.nama;
+      else actTag.innerText = 'TIDAK ADA PERIODE AKTIF';
+
+      const btnAddPeriodeContainer = document.getElementById('container-btn-add-periode');
+      if (currentUser.role === 'superadmin') {
+        btnAddPeriodeContainer.innerHTML = `<button class="btn btn-light btn-sm fw-bold" onclick="showModalAddPeriode()"><i class="bi bi-plus-circle-fill text-success"></i> Tambah Periode Baru</button>`;
+      } else {
+        btnAddPeriodeContainer.innerHTML = '';
+      }
+
+      paginationState['table-admin-riwayat'].rawData = data.historyIuran || [];
+      renderPaginatedTable('table-admin-riwayat', 'tbody-admin-riwayat', renderRowIuran);
+
+      paginationState['table-input-hasil'].rawData = data.historyIuran || [];
+      renderPaginatedTable('table-input-hasil', 'tbody-input-hasil', renderRowIuran);
+
+      paginationState['table-alokasi'].rawData = data.alokasi || [];
+      renderPaginatedTable('table-alokasi', 'tbody-alokasi', renderRowAlokasi);
+
+      paginationState['table-pendaftar-mhs'].rawData = data.mahasiswaPendaftar || [];
+      renderPaginatedTable('table-pendaftar-mhs', 'tbody-pendaftar-mhs', renderRowPendaftarMhs);
+
+      paginationState['table-periode-beasiswa'].rawData = data.periodeList || [];
+      renderPaginatedTable('table-periode-beasiswa', 'tbody-periode-beasiswa', renderRowPeriodeBeasiswa);
+
+      paginationState['table-master-prodi'].rawData = data.prodiList || [];
+      renderPaginatedTable('table-master-prodi', 'tbody-master-prodi', renderRowMasterProdi);
+
+      // Populate Form Pencairan Dana Beasiswa
+      populatePeriodeAlokasiDropdown(data.periodeList, data.activePeriode);
+
+      renderTableUsers(data.users);
+      loadMonitorData();
+
+      if (silent) hideRefreshIndicator();
+    }).getAdminDashboardData();
+  }
+
+  // Menampilkan periode yang berstatus AKTIF pada dropdown Pengelolaan Dana Beasiswa
+  function populatePeriodeAlokasiDropdown(periodeList, activePeriode) {
+    const selectPeriode = document.getElementById('select-periode-alokasi');
+    const selectedPeriodeValBefore = selectPeriode.value;
+
+    selectPeriode.innerHTML = '<option value="">-- Pilih Periode Beasiswa Aktif --</option>';
+    
+    let defaultValToSet = '';
+    const activeList = (periodeList || []).filter(p => p.isActive);
+
+    activeList.forEach(p => {
+      selectPeriode.innerHTML += `<option value="${p.id}">${p.nama} (AKTIF)</option>`;
+      defaultValToSet = p.id;
+    });
+
+    if (selectedPeriodeValBefore && Array.from(selectPeriode.options).some(o => o.value === selectedPeriodeValBefore)) {
+      selectPeriode.value = selectedPeriodeValBefore;
+    } else if (defaultValToSet) {
+      selectPeriode.value = defaultValToSet;
+    }
+
+    onPeriodeAlokasiChanged();
+  }
+
+  // KOREKSI UTAMA: Pengecekan pencairan beasiswa dicocokkan spesifik berdasarkan NRP DAN Periode saat ini
+  function onPeriodeAlokasiChanged() {
+    if (!cachedAdminData) return;
+
+    const selectPeriode = document.getElementById('select-periode-alokasi');
+    const selectedPeriodeId = selectPeriode.value;
+    const selectMhs = document.getElementById('select-mhs-alokasi');
+    const selectedMhsValBefore = selectMhs.value;
+
+    selectMhs.innerHTML = '<option value="">-- Pilih Mahasiswa Pendaftar --</option>';
+    document.getElementById('alk-prodi').value = '';
+    document.getElementById('alk-nominal').value = '';
+
+    if (!selectedPeriodeId) return;
+
+    const selectedPeriodeObj = (cachedAdminData.periodeList || []).find(p => p.id === selectedPeriodeId);
+    const namaPeriodeStr = selectedPeriodeObj ? selectedPeriodeObj.semester + ' ' + selectedPeriodeObj.tahunAkademik : '';
+
+    const mhsPendaftarList = cachedAdminData.mahasiswaPendaftar || [];
+    const alokasiList = cachedAdminData.alokasi || [];
+
+    const eligibleMhs = mhsPendaftarList.filter(m => {
+      let reg = m.pendaftaran;
+      if (!reg) return false;
+
+      let isCurrentPeriod = (reg.idPeriode === selectedPeriodeId);
+      let isDiterima = (reg.statusBeasiswa === 'Diterima');
+      
+      // HANYA CEK pencairan untuk PERIODE YANG SAMA (bukan periode lampau)
+      let isAlreadyDisbursedInThisPeriod = alokasiList.some(a => {
+        let sameNrp = String(a.nrp).trim() === String(m.nrp).trim();
+        let samePeriode = (a.periode === namaPeriodeStr || a.periode === selectedPeriodeId);
+        return sameNrp && samePeriode;
+      });
+
+      return isCurrentPeriod && isDiterima && !isAlreadyDisbursedInThisPeriod;
+    });
+
+    eligibleMhs.forEach(m => {
+      let reg = m.pendaftaran;
+      let uktVal = reg.ukt || 0;
+      selectMhs.innerHTML += `<option value="${m.nrp}|${m.nama}|${m.prodi}|${uktVal}">${m.nama} (${m.nrp}) - ${m.prodi} [IPK: ${reg.ipk}] - UKT: ${formatRupiah(uktVal)}</option>`;
+    });
+
+    if (selectedMhsValBefore && Array.from(selectMhs.options).some(o => o.value === selectedMhsValBefore)) {
+      selectMhs.value = selectedMhsValBefore;
+      autoFillAlokasiMhs(selectMhs);
+    }
+  }
+
+  // Otomatis isi prodi dan nominal pencairan berdasar UKT mahasiswa
+  function autoFillAlokasiMhs(selectEl) {
+    if (!selectEl.value) {
+      document.getElementById('alk-prodi').value = '';
+      document.getElementById('alk-nominal').value = '';
+      return;
+    }
+    const arr = selectEl.value.split('|');
+    document.getElementById('alk-prodi').value = arr[2] || '';
+    document.getElementById('alk-nominal').value = arr[3] || 0;
+  }
+
+  function handleUploadTemplateForm(e) {
+    e.preventDefault();
+    const fileInput = document.getElementById('file-template-form');
+    if (!fileInput.files.length) return;
+
+    const file = fileInput.files[0];
+    const isDocx = file.name.endsWith('.docx') || file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+    if (!isDocx) {
+      Swal.fire('Peringatan', 'File formulir pendaftaran harus berformat .DOCX!', 'warning');
+      return;
+    }
+
+    const btn = document.getElementById('btn-upload-template');
+    btn.disabled = true; btn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Mengunggah...`;
+
+    const reader = new FileReader();
+    reader.onload = function(evt) {
+      const fileData = {
+        base64: evt.target.result.split(',')[1],
+        mimeType: file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        fileName: `FORM_PENDAFTARAN_BATERAI_${file.name}`
+      };
+
+      google.script.run.withSuccessHandler(res => {
+        btn.disabled = false; btn.innerHTML = `<i class="bi bi-cloud-upload"></i> Unggah Formulir DOCX`;
+        if (res.success) {
+          Swal.fire('Berhasil', res.message, 'success'); fileInput.value = '';
+        } else { Swal.fire('Gagal', res.message, 'error'); }
+      }).uploadFormTemplate(fileData);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function renderRowPendaftarMhs(m) {
+    let statusAkunBadge = (m.statusAkun === 'Aktif') 
+      ? `<span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Aktif</span>` 
+      : `<span class="badge bg-warning text-dark"><i class="bi bi-clock me-1"></i>Pending</span>`;
+
+    let reg = m.pendaftaran;
+    let statusBeasiswaBadge = reg 
+      ? `<span class="badge bg-info text-dark">${reg.statusBeasiswa}</span>` 
+      : `<span class="badge bg-secondary">Belum Mendaftar Periode Ini</span>`;
+
+    let btnAktivasi = (m.statusAkun === 'Pending')
+      ? `<button class="btn btn-sm btn-success me-1" onclick="quickActivateMhs('${m.id}')" title="Aktivasi Akun Mahasiswa"><i class="bi bi-person-check-fill"></i> Aktivasi Akun</button>`
+      : '';
+
+    return `
+      <tr>
+        <td><strong>${m.nrp}</strong></td>
+        <td>${m.nama}</td>
+        <td><small>${m.prodi}<br>Semester ${m.semester}</small></td>
+        <td>${m.noWa}</td>
+        <td class="text-center">${statusAkunBadge}</td>
+        <td>${statusBeasiswaBadge}</td>
+        <td class="text-center">
+          ${btnAktivasi}
+          <button class="btn btn-sm btn-info text-white me-1" onclick="viewDetailMhsModal('${m.id}')"><i class="bi bi-eye-fill"></i> View Data</button>
+          <button class="btn btn-sm btn-primary" onclick="editStatusMhsModal('${m.id}')"><i class="bi bi-pencil-square"></i> Kelola</button>
+        </td>
+      </tr>
+    `;
+  }
+
+  function quickActivateMhs(mhsId) {
+    let m = cachedAdminData.mahasiswaPendaftar.find(item => item.id === mhsId);
+    if (!m) return;
+
+    Swal.fire({
+      title: 'Aktivasi Akun Mahasiswa?',
+      text: `Aktifkan akun mahasiswa ${m.nama} (${m.nrp}) agar dapat login ke dalam sistem?`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Ya, Aktifkan Akun',
+      confirmButtonColor: '#198754'
+    }).then(res => {
+      if (res.isConfirmed) {
+        google.script.run.withSuccessHandler(r => {
+          if (r.success) {
+            Swal.fire('Berhasil', 'Akun mahasiswa telah diaktivasi!', 'success');
+            loadAdminData();
+          } else {
+            Swal.fire('Gagal', r.message, 'error');
+          }
+        }).updateStatusMahasiswa(mhsId, 'Aktif', null);
+      }
+    });
+  }
+
+  function viewDetailMhsModal(mhsId) {
+    let m = cachedAdminData.mahasiswaPendaftar.find(item => item.id === mhsId);
+    if (!m) return;
+
+    let reg = m.pendaftaran;
+    let regDetailHtml = reg ? `
+      <div class="border rounded p-3 bg-light text-start mb-2">
+        <h6 class="fw-bold text-primary border-bottom pb-2 mb-2"><i class="bi bi-file-earmark-text"></i> Data Pengajuan Periode Aktif</h6>
+        <p class="mb-1"><strong>Nilai IPK:</strong> ${reg.ipk}</p>
+        <p class="mb-1"><strong>Nilai IPS Semester Berjalan:</strong> ${reg.ips}</p>
+        <p class="mb-1"><strong>Nominal UKT:</strong> ${formatRupiah(reg.ukt)}</p>
+        <p class="mb-1"><strong>Status Beasiswa:</strong> <span class="badge bg-info text-dark">${reg.statusBeasiswa}</span></p>
+        <p class="mb-1"><strong>Tanggal Pengiriman:</strong> ${reg.tanggalSubmit}</p>
+        <div class="mt-3">
+          <a href="https://drive.google.com/file/d/${reg.fileBerkasId}/view" target="_blank" class="btn btn-sm btn-danger fw-bold"><i class="bi bi-file-earmark-pdf"></i> Buka Dokumen Berkas PDF Pendaftaran</a>
+        </div>
+      </div>
+    ` : `
+      <div class="alert alert-warning text-start mb-2">
+        <i class="bi bi-exclamation-triangle-fill me-1"></i> Mahasiswa ini belum mengisi data akademik (IPK, IPS, UKT) dan belum mengunggah berkas PDF pada periode beasiswa aktif.
+      </div>
+    `;
+
+    Swal.fire({
+      title: '<i class="bi bi-person-lines-fill text-primary me-2"></i>Rincian Data Pendaftar',
+      width: '650px',
+      html: `
+        <div class="text-start mb-3">
+          <table class="table table-sm table-borderless">
+            <tr><th style="width: 140px;">NRP</th><td>: <strong>${m.nrp}</strong></td></tr>
+            <tr><th>Nama Lengkap</th><td>: ${m.nama}</td></tr>
+            <tr><th>Program Studi</th><td>: ${m.prodi}</td></tr>
+            <tr><th>Semester</th><td>: ${m.semester}</td></tr>
+            <tr><th>No. WhatsApp</th><td>: ${m.noWa}</td></tr>
+            <tr><th>Username / Pass</th><td>: <code>${m.username}</code> / <code>${m.password}</code></td></tr>
+            <tr><th>Status Akun</th><td>: <span class="badge ${m.statusAkun === 'Aktif' ? 'bg-success' : 'bg-warning text-dark'}">${m.statusAkun}</span></td></tr>
+          </table>
+        </div>
+        ${regDetailHtml}
+      `,
+      confirmButtonText: 'Tutup'
+    });
+  }
+
+  // Kondisi pilihan dropdown status beasiswa berdasar apakah mahasiswa sudah mendaftar atau belum
+  function editStatusMhsModal(mhsId) {
+    let item = cachedAdminData.mahasiswaPendaftar.find(m => m.id === mhsId);
+    if (!item) return;
+
+    let reg = item.pendaftaran;
+    let beasiswaSelectHtml = '';
+
+    if (!reg) {
+      // Jika mahasiswa BELUM mendaftar, opsi hanya "Belum Diproses"
+      beasiswaSelectHtml = `
+        <select id="swal-mhs-status-beasiswa" class="form-select bg-light" disabled>
+          <option value="Belum Diproses" selected>Belum Diproses (Belum Mendaftar)</option>
+        </select>
+        <small class="text-muted d-block mt-1">Mahasiswa belum mengirimkan berkas pendaftaran periode ini.</small>
+      `;
+    } else {
+      // Jika mahasiswa SUDAH mendaftar, opsi ada 3: Masih Diproses / Belum Diproses, Diterima, Belum Berkesempatan
+      let currentBeasiswaStatus = reg.statusBeasiswa || 'Belum Diproses';
+      beasiswaSelectHtml = `
+        <select id="swal-mhs-status-beasiswa" class="form-select">
+          <option value="Belum Diproses" ${currentBeasiswaStatus === 'Belum Diproses' ? 'selected' : ''}>Masih Diproses / Belum Diproses</option>
+          <option value="Diterima" ${currentBeasiswaStatus === 'Diterima' ? 'selected' : ''}>Diterima</option>
+          <option value="Belum Berkesempatan" ${currentBeasiswaStatus === 'Belum Berkesempatan' ? 'selected' : ''}>Belum Berkesempatan</option>
+        </select>
+      `;
+    }
+
+    Swal.fire({
+      title: '<i class="bi bi-person-gear text-primary me-2"></i>Kelola Pendaftaran Mahasiswa',
+      width: '600px',
+      html: `
+        <div class="row g-3 text-start">
+          <div class="col-12"><label class="form-label fw-bold">Nama / NRP</label><input class="form-control bg-light" value="${item.nama} (${item.nrp})" disabled></div>
+          <div class="col-md-6">
+            <label class="form-label fw-bold">Aktivasi Akun Login</label>
+            <select id="swal-mhs-status-akun" class="form-select">
+              <option value="Pending" ${item.statusAkun === 'Pending' ? 'selected' : ''}>Pending</option>
+              <option value="Aktif" ${item.statusAkun === 'Aktif' ? 'selected' : ''}>Aktif</option>
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label fw-bold">Status Beasiswa (Periode Aktif)</label>
+            ${beasiswaSelectHtml}
+          </div>
+        </div>
+      `,
+      showCancelButton: true, confirmButtonText: 'Simpan Status', confirmButtonColor: '#0d6efd',
+      preConfirm: () => {
+        return {
+          statusAkun: document.getElementById('swal-mhs-status-akun').value,
+          statusBeasiswa: reg ? document.getElementById('swal-mhs-status-beasiswa').value : null
+        }
+      }
+    }).then(result => {
+      if (result.isConfirmed) {
+        google.script.run.withSuccessHandler(res => {
+          if (res.success) { Swal.fire('Sukses', res.message, 'success'); loadAdminData(); }
+          else { Swal.fire('Gagal', res.message, 'error'); }
+        }).updateStatusMahasiswa(mhsId, result.value.statusAkun, result.value.statusBeasiswa);
+      }
+    });
+  }
+
+  function renderRowPeriodeBeasiswa(p) {
+    let statusBadge = p.isActive 
+      ? `<span class="badge bg-success"><i class="bi bi-check-circle-fill"></i> AKTIF</span>` 
+      : `<span class="badge bg-secondary">Nonaktif</span>`;
+
+    let actionButtons = '';
+
+    if (currentUser.role === 'superadmin') {
+      if (p.isActive) {
+        actionButtons += `<button class="btn btn-sm btn-outline-secondary me-1" onclick="togglePeriodeAction('${p.id}', 'Nonaktif')"><i class="bi bi-pause-circle-fill"></i> Nonaktifkan</button>`;
+      } else {
+        actionButtons += `<button class="btn btn-sm btn-success me-1" onclick="togglePeriodeAction('${p.id}', 'Aktif')"><i class="bi bi-play-circle-fill"></i> Aktifkan</button>`;
+      }
+
+      actionButtons += `
+        <button class="btn btn-sm btn-warning text-dark me-1" onclick="editPeriodeModal('${p.id}')"><i class="bi bi-pencil-square"></i> Edit</button>
+        <button class="btn btn-sm btn-danger" onclick="deletePeriodeAction('${p.id}')"><i class="bi bi-trash-fill"></i> Hapus</button>
+      `;
+    }
+
+    return `
+      <tr>
+        <td><strong>${p.id}</strong></td>
+        <td>${p.nama}</td>
+        <td>${p.tahunAkademik}</td>
+        <td>${p.semester}</td>
+        <td class="text-center">${statusBadge}</td>
+        <td>${p.tanggal}</td>
+        <td class="text-center">${actionButtons}</td>
+      </tr>
+    `;
+  }
+
+  function togglePeriodeAction(periodeId, targetStatus) {
+    let confirmTitle = targetStatus === 'Aktif' ? 'Aktifkan Periode Ini?' : 'Nonaktifkan Periode Ini?';
+    let confirmText = targetStatus === 'Aktif' 
+      ? 'Periode ini akan diaktifkan untuk pendaftaran beasiswa mahasiswa.' 
+      : 'Periode ini akan dinonaktifkan dan formulir pendaftaran mahasiswa akan disembunyikan.';
+
+    Swal.fire({
+      title: confirmTitle,
+      text: confirmText,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: targetStatus === 'Aktif' ? 'Ya, Aktifkan' : 'Ya, Nonaktifkan',
+      confirmButtonColor: targetStatus === 'Aktif' ? '#198754' : '#6c757d'
+    }).then(res => {
+      if (res.isConfirmed) {
+        google.script.run.withSuccessHandler(r => {
+          if (r.success) { 
+            Swal.fire('Berhasil', r.message, 'success'); 
+            loadAdminData(); 
+          } else { 
+            Swal.fire('Gagal', r.message, 'error'); 
+          }
+        }).togglePeriodeStatus(currentUser.role, periodeId, targetStatus);
+      }
+    });
+  }
+
+  function showModalAddPeriode() {
+    if (currentUser.role !== 'superadmin') {
+      Swal.fire('Akses Ditolak', 'Hanya Superadmin yang dapat menambah periode beasiswa!', 'error');
+      return;
+    }
+
+    Swal.fire({
+      title: '<i class="bi bi-calendar-plus text-success me-2"></i>Tambah Periode Beasiswa',
+      width: '600px',
+      html: `
+        <div class="row g-3 text-start">
+          <div class="col-12"><label class="form-label fw-bold">Nama Periode</label><input id="swal-per-nama" class="form-control" placeholder="Contoh: Ganjil 2026/2027" required></div>
+          <div class="col-md-6">
+            <label class="form-label fw-bold">Tahun Akademik</label>
+            <select id="swal-per-thn" class="form-select">
+              <option value="2025/2026">2025/2026</option>
+              <option value="2026/2027" selected>2026/2027</option>
+              <option value="2027/2028">2027/2028</option>
+              <option value="2028/2029">2028/2029</option>
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label fw-bold">Semester</label>
+            <select id="swal-per-sem" class="form-select">
+              <option value="Ganjil">Ganjil</option>
+              <option value="Genap">Genap</option>
+            </select>
+          </div>
+        </div>
+      `,
+      showCancelButton: true, confirmButtonText: 'Simpan Periode', confirmButtonColor: '#198754',
+      preConfirm: () => {
+        return {
+          nama: document.getElementById('swal-per-nama').value,
+          tahunAkademik: document.getElementById('swal-per-thn').value,
+          semester: document.getElementById('swal-per-sem').value
+        }
+      }
+    }).then(res => {
+      if (res.isConfirmed) {
+        google.script.run.withSuccessHandler(r => {
+          if (r.success) { Swal.fire('Sukses', r.message, 'success'); loadAdminData(); }
+          else { Swal.fire('Gagal', r.message, 'error'); }
+        }).addPeriode(currentUser.role, res.value.nama, res.value.tahunAkademik, res.value.semester);
+      }
+    });
+  }
+
+  function editPeriodeModal(periodeId) {
+    if (currentUser.role !== 'superadmin') {
+      Swal.fire('Akses Ditolak', 'Hanya Superadmin yang dapat mengubah periode beasiswa!', 'error');
+      return;
+    }
+
+    let p = cachedAdminData.periodeList.find(item => item.id === periodeId);
+    if (!p) return;
+
+    Swal.fire({
+      title: '<i class="bi bi-pencil-square text-warning me-2"></i>Edit Periode Beasiswa',
+      width: '600px',
+      html: `
+        <div class="row g-3 text-start">
+          <div class="col-12"><label class="form-label fw-bold">Nama Periode</label><input id="swal-edit-per-nama" class="form-control" value="${p.nama}" required></div>
+          <div class="col-md-6">
+            <label class="form-label fw-bold">Tahun Akademik</label>
+            <select id="swal-edit-per-thn" class="form-select">
+              <option value="2025/2026" ${p.tahunAkademik === '2025/2026' ? 'selected' : ''}>2025/2026</option>
+              <option value="2026/2027" ${p.tahunAkademik === '2026/2027' ? 'selected' : ''}>2026/2027</option>
+              <option value="2027/2028" ${p.tahunAkademik === '2027/2028' ? 'selected' : ''}>2027/2028</option>
+              <option value="2028/2029" ${p.tahunAkademik === '2028/2029' ? 'selected' : ''}>2028/2029</option>
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label fw-bold">Semester</label>
+            <select id="swal-edit-per-sem" class="form-select">
+              <option value="Ganjil" ${p.semester === 'Ganjil' ? 'selected' : ''}>Ganjil</option>
+              <option value="Genap" ${p.semester === 'Genap' ? 'selected' : ''}>Genap</option>
+            </select>
+          </div>
+        </div>
+      `,
+      showCancelButton: true, confirmButtonText: 'Simpan Perubahan', confirmButtonColor: '#0d6efd',
+      preConfirm: () => {
+        return {
+          nama: document.getElementById('swal-edit-per-nama').value,
+          tahunAkademik: document.getElementById('swal-edit-per-thn').value,
+          semester: document.getElementById('swal-edit-per-sem').value
+        }
+      }
+    }).then(res => {
+      if (res.isConfirmed) {
+        google.script.run.withSuccessHandler(r => {
+          if (r.success) { Swal.fire('Sukses', r.message, 'success'); loadAdminData(); }
+          else { Swal.fire('Gagal', r.message, 'error'); }
+        }).updatePeriode(currentUser.role, periodeId, res.value.nama, res.value.tahunAkademik, res.value.semester);
+      }
+    });
+  }
+
+  function deletePeriodeAction(periodeId) {
+    if (currentUser.role !== 'superadmin') {
+      Swal.fire('Akses Ditolak', 'Hanya Superadmin yang dapat menghapus periode beasiswa!', 'error');
+      return;
+    }
+
+    Swal.fire({
+      title: 'Hapus Periode Beasiswa?',
+      text: "Data periode ini akan dihapus dari sistem!",
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#d33',
+      confirmButtonText: 'Ya, Hapus!'
+    }).then(res => {
+      if (res.isConfirmed) {
+        google.script.run.withSuccessHandler(r => {
+          if (r.success) { Swal.fire('Terhapus!', r.message, 'success'); loadAdminData(); }
+          else { Swal.fire('Gagal', r.message, 'error'); }
+        }).deletePeriode(currentUser.role, periodeId);
+      }
+    });
+  }
+
+  function renderRowMasterProdi(p) {
+    return `
+      <tr>
+        <td><strong>${p.id}</strong></td>
+        <td>${p.nama}</td>
+        <td class="text-center">
+          <button class="btn btn-sm btn-warning text-dark me-1" onclick="editProdiModal('${p.id}', '${p.nama}')"><i class="bi bi-pencil-square"></i> Edit</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteProdiAction('${p.id}')"><i class="bi bi-trash-fill"></i> Hapus</button>
+        </td>
+      </tr>
+    `;
+  }
+
+  function showModalAddProdi() {
+    Swal.fire({
+      title: 'Tambah Program Studi', input: 'text', inputLabel: 'Nama Program Studi', showCancelButton: true, confirmButtonText: 'Simpan',
+      preConfirm: (val) => { if (!val) Swal.showValidationMessage('Nama Prodi tidak boleh kosong!'); return val; }
+    }).then(res => {
+      if (res.isConfirmed) {
+        google.script.run.withSuccessHandler(r => { Swal.fire('Sukses', r.message, 'success'); loadProdiGlobal(); loadAdminData(); }).addProdi(res.value);
+      }
+    });
+  }
+
+  function editProdiModal(id, namaOld) {
+    Swal.fire({
+      title: 'Edit Program Studi', input: 'text', inputValue: namaOld, showCancelButton: true, confirmButtonText: 'Simpan',
+      preConfirm: (val) => { if (!val) Swal.showValidationMessage('Nama Prodi tidak boleh kosong!'); return val; }
+    }).then(res => {
+      if (res.isConfirmed) {
+        google.script.run.withSuccessHandler(r => { Swal.fire('Sukses', r.message, 'success'); loadProdiGlobal(); loadAdminData(); }).updateProdi(id, res.value);
+      }
+    });
+  }
+
+  function deleteProdiAction(id) {
+    Swal.fire({ title: 'Hapus Program Studi?', icon: 'warning', showCancelButton: true, confirmButtonColor: '#d33', confirmButtonText: 'Ya, Hapus' }).then(res => {
+      if (res.isConfirmed) {
+        google.script.run.withSuccessHandler(r => { Swal.fire('Sukses', r.message, 'success'); loadProdiGlobal(); loadAdminData(); }).deleteProdi(id);
+      }
+    });
+  }
+
+  function renderRowIuran(r) {
+    return `
+      <tr>
+        <td>${r.trxId}</td><td>${r.nama}</td><td>${r.tanggal}</td><td>${r.periode}</td><td>${formatRupiah(r.jumlah)}</td>
+        <td class="text-center">
+          <button class="btn btn-sm btn-warning text-dark me-1" onclick="editIuran('${r.trxId}')"><i class="bi bi-pencil-square"></i> Edit</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteIuranAction('${r.trxId}')"><i class="bi bi-trash-fill"></i> Hapus</button>
+        </td>
+      </tr>
+    `;
+  }
+
+  function renderRowAlokasi(a) {
+    return `
+      <tr>
+        <td><strong>${a.nrp || '-'}</strong></td><td>${a.mahasiswa}</td><td>${a.prodi}</td><td>${formatRupiah(a.nominal)}</td><td>${a.periode}</td><td>${a.tanggal}</td>
+        <td class="text-center">
+          <button class="btn btn-sm btn-warning text-dark me-1" onclick="editAlokasiModal('${a.id}')"><i class="bi bi-pencil-square"></i> Edit</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteAlokasiAction('${a.id}')"><i class="bi bi-trash-fill"></i> Hapus</button>
+        </td>
+      </tr>
+    `;
+  }
+
+  function renderTableUsers(users) {
+    let isSuperAdmin = (currentUser.role === 'superadmin');
+    let theadRow = document.getElementById('thead-users-row');
+    theadRow.innerHTML = isSuperAdmin 
+      ? `<th>ID</th><th>Username</th><th>Password</th><th>Nama</th><th>Role</th><th>NIP</th><th>Prodi</th><th class="text-center">Aksi</th>`
+      : `<th>ID</th><th>Username</th><th>Nama</th><th>Role</th><th>NIP</th><th>Prodi</th><th class="text-center">Aksi</th>`;
+
+    let selectPay = document.getElementById('select-user-pay');
+    let currentSelectedPayValue = selectPay ? selectPay.value : null;
+
+    if (!isUserPayDropdownLoaded) selectPay.innerHTML = '';
+    users.forEach(u => {
+      if (u.role === 'user' && !isUserPayDropdownLoaded) selectPay.innerHTML += `<option value="${u.id}|${u.nama}">${u.nama} (${u.prodi})</option>`;
+    });
+
+    if (!isUserPayDropdownLoaded && selectPay.options.length > 0) isUserPayDropdownLoaded = true;
+    else if (currentSelectedPayValue && selectPay) selectPay.value = currentSelectedPayValue;
+
+    paginationState['table-users'].rawData = users || [];
+    renderPaginatedTable('table-users', 'tbody-users', (u) => {
+      let passwordTd = isSuperAdmin ? `<td><code class="text-danger">${u.password}</code></td>` : '';
+      let btnAction = `<button class="btn btn-sm btn-warning text-dark me-1" onclick="editUserModal('${u.id}')"><i class="bi bi-pencil-square"></i> Edit</button>`;
+      if (currentUser.role === 'superadmin' || (currentUser.role === 'admin' && u.role === 'user')) {
+        btnAction += `<button class="btn btn-sm btn-danger" onclick="deleteUserAction('${u.id}')"><i class="bi bi-trash-fill"></i> Hapus</button>`;
+      }
+      return `<tr><td>${u.id}</td><td>${u.username}</td>${passwordTd}<td>${u.nama}</td><td><span class="badge bg-info text-dark">${u.role}</span></td><td>${u.nip}</td><td>${u.prodi}</td><td class="text-center">${btnAction}</td></tr>`;
+    });
+  }
+
+  function loadUserData(silent = false) {
+    google.script.run.withSuccessHandler(data => {
+      document.getElementById('user-total-iuran').innerText = formatRupiah(data.userTotalMasuk);
+      document.getElementById('saldo-kas-akhir-user').innerText = formatRupiah(data.saldoKasAkhir);
+
+      const reminderContainer = document.getElementById('user-payment-reminder');
+      if (reminderContainer) {
+        reminderContainer.innerHTML = data.statusBulanIni ? `
+          <div class="alert border-0 shadow-sm d-flex align-items-center" role="alert" style="background-color: #d1e7dd; color: #0f5132;">
+            <i class="bi bi-check-circle-fill fs-3 me-3 text-success"></i>
+            <div><h6 class="alert-heading mb-1 fw-bold">Status Pembayaran Bulan Ini (${data.namaBulanIni})</h6><div class="mb-0 fs-6">Terima kasih, Anda sudah berdonasi bulan <strong>(${data.namaBulanIni})</strong> ini.</div></div>
+          </div>
+        ` : `
+          <div class="alert alert-danger border-danger shadow-sm d-flex align-items-center" role="alert">
+            <i class="bi bi-exclamation-triangle-fill fs-2 me-3 text-danger"></i>
+            <div><h6 class="alert-heading mb-1 fw-bold text-danger"><i class="bi bi-bell-fill"></i> PERHATIAN KHUSUS</h6><div class="mb-0 text-dark fs-6 fw-semibold">Anda tercatat belum melakukan pembayaran bulan <strong>(${data.namaBulanIni})</strong>.</div></div>
+          </div>
+        `;
+      }
+
+      paginationState['table-user-history'].rawData = data.history || [];
+      renderPaginatedTable('table-user-history', 'tbody-user-history', renderRowUserHistory);
+
+      paginationState['table-user-alokasi'].rawData = data.alokasi || [];
+      renderPaginatedTable('table-user-alokasi', 'tbody-user-alokasi', renderRowUserAlokasi);
+
+      paginationState['table-user-monitor'].rawData = data.monitorUser || [];
+      renderPaginatedTable('table-user-monitor', 'tbody-user-monitor', renderRowUserMonitor);
+
+      if (silent) hideRefreshIndicator();
+    }).getUserDashboardData(currentUser.id);
+  }
+
+  function renderRowUserHistory(row) {
+    return `<tr><td>${row.trxId}</td><td>${row.tanggal}</td><td>${row.periode}</td><td>${formatRupiah(row.jumlah)}</td><td>${row.keterangan}</td></tr>`;
+  }
+
+  function renderRowUserAlokasi(a) {
+    return `<tr><td><strong>${a.nrp || '-'}</strong></td><td>${a.mahasiswa}</td><td>${a.prodi}</td><td>${formatRupiah(a.nominal)}</td><td>${a.periode}</td><td>${a.tanggal}</td></tr>`;
+  }
+
+  function renderRowUserMonitor(yearObj) {
+    let colsBulan = bulans.map(b => {
+      let st = yearObj.statusBulan[b];
+      return (st && st.lunas) 
+        ? `<td><span class="badge bg-success" title="Dibayar Tgl: ${st.tanggal}"><i class="bi bi-check-circle"></i> Rp ${formatRibuan(st.jumlah)}</span></td>` 
+        : `<td><span class="badge bg-light text-danger border"><i class="bi bi-x-circle"></i> Belum</span></td>`;
+    }).join('');
+
+    return `<tr><td class="text-center fw-bold text-primary fs-6">${yearObj.tahun}</td>${colsBulan}<td class="fw-bold text-end">${formatRupiah(yearObj.totalTahun)}</td></tr>`;
+  }
+
+  function loadMonitorData() {
+    const selectedYear = document.getElementById('select-monitor-tahun').value || '2026';
+    google.script.run.withSuccessHandler(monitorRows => {
+      paginationState['table-monitor'].rawData = monitorRows || [];
+      renderPaginatedTable('table-monitor', 'tbody-monitor', renderRowMonitor);
+    }).getMonitorIuranData(selectedYear);
+  }
+
+  function renderRowMonitor(m) {
+    let colsBulan = bulans.map(b => {
+      let st = m.statusBulan[b];
+      return (st && st.lunas) 
+        ? `<td><span class="badge bg-success" title="Dibayar Tgl: ${st.tanggal}"><i class="bi bi-check-circle"></i> Rp ${formatRibuan(st.jumlah)}</span></td>` 
+        : `<td><span class="badge bg-light text-danger border"><i class="bi bi-x-circle"></i> Belum</span></td>`;
+    }).join('');
+
+    return `<tr><td class="text-start fw-bold">${m.nama}</td><td class="text-start text-muted"><small>${m.prodi}<br>NIP: ${m.nip}</small></td>${colsBulan}</tr>`;
+  }
+
+  function previewLaporan(e) {
+    if (e) e.preventDefault();
+    const btnPreview = document.getElementById('btn-preview');
+    btnPreview.disabled = true; btnPreview.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Loading...`;
+
+    google.script.run.withSuccessHandler(res => {
+      btnPreview.disabled = false; btnPreview.innerHTML = `<i class="bi bi-eye"></i> Preview`;
+      if (res.success) {
+        document.getElementById('container-preview-laporan').classList.remove('d-none');
+        document.getElementById('prev-total-masuk').innerText = formatRupiah(res.totalIuran);
+        document.getElementById('prev-total-keluar').innerText = formatRupiah(res.totalAlokasi);
+        document.getElementById('prev-selisih').innerText = formatRupiah(res.selisih);
+
+        paginationState['table-preview-iuran'].rawData = res.iuran || [];
+        renderPaginatedTable('table-preview-iuran', 'tbody-preview-iuran', (item, idx) => `<tr><td>${idx + 1}</td><td>${item.id}</td><td>${item.nama}</td><td>${item.tanggal}</td><td>${item.periode}</td><td class="text-end fw-bold">${formatRupiah(item.jumlah)}</td></tr>`);
+
+        paginationState['table-preview-alokasi'].rawData = res.alokasi || [];
+        renderPaginatedTable('table-preview-alokasi', 'tbody-preview-alokasi', (aItem, aIdx) => `<tr><td>${aIdx + 1}</td><td><strong>${aItem.nrp || '-'}</strong></td><td>${aItem.mahasiswa}</td><td>${aItem.prodi}</td><td>${aItem.periode}</td><td>${aItem.tanggal}</td><td class="text-end fw-bold">${formatRupiah(aItem.nominal)}</td></tr>`);
+      } else { Swal.fire('Gagal', res.message, 'error'); }
+    }).getPreviewReport(document.getElementById('pdf-start-bulan').value, document.getElementById('pdf-start-tahun').value, document.getElementById('pdf-end-bulan').value, document.getElementById('pdf-end-tahun').value);
+  }
+
+  // --- ENGINE PAGINATION & SEARCH ---
+  function renderPaginatedTable(tableId, tbodyId, rowRendererFn) {
+    const table = document.getElementById(tableId);
+    if (!table) return;
+
+    const state = paginationState[tableId];
+    let filteredData = state.rawData;
+
+    if (state.searchKeyword && state.searchKeyword.trim() !== '') {
+      const kw = state.searchKeyword.toLowerCase().trim();
+      filteredData = state.rawData.filter(item => checkObjectMatchesKeyword(item, kw));
+    }
+
+    const totalData = filteredData.length;
+    const totalPages = Math.ceil(totalData / state.pageSize) || 1;
+
+    if (state.currentPage > totalPages) state.currentPage = totalPages;
+    if (state.currentPage < 1) state.currentPage = 1;
+
+    const startIdx = (state.currentPage - 1) * state.pageSize;
+    const endIdx = Math.min(startIdx + state.pageSize, totalData);
+    const pageData = filteredData.slice(startIdx, endIdx);
+
+    const tbody = document.getElementById(tbodyId);
+    tbody.innerHTML = '';
+
+    if (pageData.length === 0) {
+      const colCount = table.querySelectorAll('thead th').length;
+      tbody.innerHTML = `<tr><td colspan="${colCount}" class="text-center text-muted py-3">Tidak ada data yang cocok untuk ditampilkan</td></tr>`;
+    } else {
+      pageData.forEach((item, idx) => tbody.innerHTML += rowRendererFn(item, startIdx + idx));
+    }
+
+    updatePaginationControls(tableId, tbodyId, rowRendererFn, startIdx, endIdx, totalData, totalPages);
+  }
+
+  function checkObjectMatchesKeyword(obj, kw) {
+    if (typeof obj === 'string' || typeof obj === 'number') return String(obj).toLowerCase().includes(kw);
+    if (typeof obj === 'object' && obj !== null) return Object.values(obj).some(val => checkObjectMatchesKeyword(val, kw));
+    return false;
+  }
+
+  function updatePaginationControls(tableId, tbodyId, rowRendererFn, startIdx, endIdx, totalData, totalPages) {
+    const table = document.getElementById(tableId);
+    const parentContainer = table.closest('.table-responsive') || table.parentElement;
+    const state = paginationState[tableId];
+
+    let topCtrl = parentContainer.previousElementSibling;
+    if (!topCtrl || !topCtrl.classList.contains('pagination-top-ctrl')) {
+      topCtrl = document.createElement('div');
+      topCtrl.className = 'd-flex justify-content-between align-items-center mb-3 flex-wrap gap-2 pagination-top-ctrl';
+      topCtrl.innerHTML = `
+        <div class="d-flex align-items-center">
+          <label class="me-2 small fw-bold text-secondary">Tampilkan:</label>
+          <select class="form-select form-select-sm w-auto select-page-size" onchange="changePageSize('${tableId}', '${tbodyId}', this.value)">
+            <option value="5" ${state.pageSize == 5 ? 'selected' : ''}>5</option>
+            <option value="10" ${state.pageSize == 10 ? 'selected' : ''}>10</option>
+            <option value="15" ${state.pageSize == 15 ? 'selected' : ''}>15</option>
+            <option value="25" ${state.pageSize == 25 ? 'selected' : ''}>25</option>
+            <option value="50" ${state.pageSize == 50 ? 'selected' : ''}>50</option>
+          </select>
+          <span class="ms-2 small text-muted">baris per halaman</span>
+        </div>
+        <div class="d-flex align-items-center">
+          <div class="input-group input-group-sm" style="width: 250px;">
+            <span class="input-group-text bg-white"><i class="bi bi-search text-muted"></i></span>
+            <input type="text" class="form-control input-table-search" placeholder="Cari data..." value="${state.searchKeyword}">
+          </div>
+        </div>
+      `;
+      parentContainer.parentNode.insertBefore(topCtrl, parentContainer);
+
+      const searchInput = topCtrl.querySelector('.input-table-search');
+      searchInput.addEventListener('input', function(e) {
+        paginationState[tableId].searchKeyword = e.target.value;
+        paginationState[tableId].currentPage = 1;
+        reRenderTableById(tableId, tbodyId);
+      });
+    }
+
+    let bottomCtrl = parentContainer.nextElementSibling;
+    if (!bottomCtrl || !bottomCtrl.classList.contains('pagination-bottom-ctrl')) {
+      bottomCtrl = document.createElement('div');
+      bottomCtrl.className = 'd-flex justify-content-between align-items-center mt-3 flex-wrap gap-2 pagination-bottom-ctrl';
+      parentContainer.parentNode.insertBefore(bottomCtrl, parentContainer.nextSibling);
+    }
+
+    let pageButtonsHtml = '';
+    for (let p = 1; p <= totalPages; p++) {
+      if (p === 1 || p === totalPages || (p >= state.currentPage - 1 && p <= state.currentPage + 1)) {
+        pageButtonsHtml += `<li class="page-item ${p === state.currentPage ? 'active' : ''}"><button class="page-link" onclick="goToPage('${tableId}', '${tbodyId}', ${p})">${p}</button></li>`;
+      } else if (p === state.currentPage - 2 || p === state.currentPage + 2) {
+        pageButtonsHtml += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+      }
+    }
+
+    bottomCtrl.innerHTML = `
+      <div class="small text-secondary">Menampilkan <strong>${totalData > 0 ? startIdx + 1 : 0}</strong> - <strong>${endIdx}</strong> dari <strong>${totalData}</strong> data</div>
+      <nav>
+        <ul class="pagination pagination-sm mb-0">
+          <li class="page-item ${state.currentPage === 1 ? 'disabled' : ''}"><button class="page-link" onclick="goToPage('${tableId}', '${tbodyId}', ${state.currentPage - 1})"><i class="bi bi-chevron-left"></i> Prev</button></li>
+          ${pageButtonsHtml}
+          <li class="page-item ${state.currentPage === totalPages || totalPages === 0 ? 'disabled' : ''}"><button class="page-link" onclick="goToPage('${tableId}', '${tbodyId}', ${state.currentPage + 1})">Next <i class="bi bi-chevron-right"></i></button></li>
+        </ul>
+      </nav>
+    `;
+  }
+
+  function changePageSize(tableId, tbodyId, newSize) {
+    paginationState[tableId].pageSize = parseInt(newSize);
+    paginationState[tableId].currentPage = 1;
+    reRenderTableById(tableId, tbodyId);
+  }
+
+  function goToPage(tableId, tbodyId, pageNum) {
+    paginationState[tableId].currentPage = pageNum;
+    reRenderTableById(tableId, tbodyId);
+  }
+
+  function reRenderTableById(tableId, tbodyId) {
+    if (tableId === 'table-user-history') renderPaginatedTable('table-user-history', 'tbody-user-history', renderRowUserHistory);
+    else if (tableId === 'table-user-monitor') renderPaginatedTable('table-user-monitor', 'tbody-user-monitor', renderRowUserMonitor);
+    else if (tableId === 'table-user-alokasi') renderPaginatedTable('table-user-alokasi', 'tbody-user-alokasi', renderRowUserAlokasi);
+    else if (tableId === 'table-admin-riwayat') renderPaginatedTable('table-admin-riwayat', 'tbody-admin-riwayat', renderRowIuran);
+    else if (tableId === 'table-input-hasil') renderPaginatedTable('table-input-hasil', 'tbody-input-hasil', renderRowIuran);
+    else if (tableId === 'table-alokasi') renderPaginatedTable('table-alokasi', 'tbody-alokasi', renderRowAlokasi);
+    else if (tableId === 'table-users') renderTableUsers(paginationState['table-users'].rawData);
+    else if (tableId === 'table-monitor') renderPaginatedTable('table-monitor', 'tbody-monitor', renderRowMonitor);
+    else if (tableId === 'table-pendaftar-mhs') renderPaginatedTable('table-pendaftar-mhs', 'tbody-pendaftar-mhs', renderRowPendaftarMhs);
+    else if (tableId === 'table-periode-beasiswa') renderPaginatedTable('table-periode-beasiswa', 'tbody-periode-beasiswa', renderRowPeriodeBeasiswa);
+    else if (tableId === 'table-master-prodi') renderPaginatedTable('table-master-prodi', 'tbody-master-prodi', renderRowMasterProdi);
+  }
+
+  // MODAL EDIT DOKUMEN & ACTION
+  function editIuran(trxId) {
+    let item = cachedAdminData.historyIuran.find(i => i.trxId === trxId);
+    if (!item) return;
+
+    let penyumbangOptions = cachedAdminData.users.filter(u => u.role === 'user').map(u => `<option value="${u.id}|${u.nama}" ${u.id === item.userId ? 'selected' : ''}>${u.nama} (${u.prodi})</option>`).join('');
+    let monthOptionsHtml = bulans.map(b => `<option value="${b}" ${b === item.bulan ? 'selected' : ''}>${b}</option>`).join('');
+    let yearOptionsHtml = '';
+    for (let y = 2026; y <= 2040; y++) yearOptionsHtml += `<option value="${y}" ${y == item.tahun ? 'selected' : ''}>${y}</option>`;
+
+    Swal.fire({
+      title: 'Edit Data Transaksi Iuran', width: '650px',
+      html: `
+        <div class="row g-3 text-start">
+          <div class="col-12"><label class="form-label fw-bold">Penyumbang</label><select id="swal-edit-user" class="form-select">${penyumbangOptions}</select></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Bulan</label><select id="swal-edit-bulan" class="form-select">${monthOptionsHtml}</select></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Tahun</label><select id="swal-edit-tahun" class="form-select">${yearOptionsHtml}</select></div>
+          <div class="col-12"><label class="form-label fw-bold">Nominal (Rp)</label><input id="swal-edit-jumlah" class="form-control" value="${item.jumlah}" type="number"></div>
+        </div>
+      `,
+      showCancelButton: true, confirmButtonText: 'Simpan',
+      preConfirm: () => {
+        let userArr = document.getElementById('swal-edit-user').value.split('|');
+        return { userId: userArr[0], namaUser: userArr[1], bulan: document.getElementById('swal-edit-bulan').value, tahun: document.getElementById('swal-edit-tahun').value, jumlah: document.getElementById('swal-edit-jumlah').value }
+      }
+    }).then(result => {
+      if (result.isConfirmed) {
+        google.script.run.withSuccessHandler(res => { if (res.success) { Swal.fire('Sukses', res.message, 'success'); loadAdminData(); } else { Swal.fire('Gagal', res.message, 'error'); } }).updateIuran(trxId, result.value.userId, result.value.namaUser, result.value.bulan, result.value.tahun, result.value.jumlah);
+      }
+    });
+  }
+
+  function editAlokasiModal(alkId) {
+    let item = cachedAdminData.alokasi.find(a => a.id === alkId);
+    if (!item) return;
+
+    let prodiSelectOptions = globalProdiList.map(p => `<option value="${p.nama}" ${p.nama === item.prodi ? 'selected' : ''}>${p.nama}</option>`).join('');
+
+    Swal.fire({
+      title: 'Edit Pencairan Beasiswa', width: '650px',
+      html: `
+        <div class="row g-3 text-start">
+          <div class="col-md-6"><label class="form-label fw-bold">NRP Mahasiswa</label><input id="swal-alk-nrp" class="form-control" value="${item.nrp || ''}"></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Nama Mahasiswa</label><input id="swal-alk-nama" class="form-control" value="${item.mahasiswa}"></div>
+          <div class="col-12"><label class="form-label fw-bold">Program Studi</label><select id="swal-alk-prodi" class="form-select">${prodiSelectOptions}</select></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Nominal (Rp)</label><input id="swal-alk-nominal" class="form-control" value="${item.nominal}" type="number"></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Periode Akademik</label><input id="swal-alk-periode" class="form-control" value="${item.periode}"></div>
+        </div>
+      `,
+      showCancelButton: true, confirmButtonText: 'Simpan',
+      preConfirm: () => {
+        return { nrp: document.getElementById('swal-alk-nrp').value, mahasiswa: document.getElementById('swal-alk-nama').value, prodi: document.getElementById('swal-alk-prodi').value, nominal: document.getElementById('swal-alk-nominal').value, periode: document.getElementById('swal-alk-periode').value }
+      }
+    }).then(result => {
+      if (result.isConfirmed) {
+        google.script.run.withSuccessHandler(res => { if (res.success) { Swal.fire('Sukses', res.message, 'success'); loadAdminData(); } else { Swal.fire('Gagal', res.message, 'error'); } }).updateAlokasi(alkId, result.value);
+      }
+    });
+  }
+
+  function editUserModal(userId) {
+    let item = cachedAdminData.users.find(u => u.id === userId);
+    if (!item) return;
+
+    let optionsRole = `<option value="user" ${item.role === 'user' ? 'selected' : ''}>User (Dosen/Tendik)</option>`;
+    if (currentUser.role === 'superadmin') optionsRole += `<option value="admin" ${item.role === 'admin' ? 'selected' : ''}>Admin</option><option value="superadmin" ${item.role === 'superadmin' ? 'selected' : ''}>Super Admin</option>`;
+
+    let prodiSelectOptions = globalProdiList.map(p => `<option value="${p.nama}" ${p.nama === item.prodi ? 'selected' : ''}>${p.nama}</option>`).join('');
+
+    Swal.fire({
+      title: 'Edit Data User Dosen', width: '650px',
+      html: `
+        <div class="row g-3 text-start">
+          <div class="col-md-6"><label class="form-label fw-bold">Username</label><input id="swal-user-uname" class="form-control" value="${item.username}"></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Password</label><input id="swal-user-pass" type="text" class="form-control" value="${item.password || ''}"></div>
+          <div class="col-12"><label class="form-label fw-bold">Nama Lengkap</label><input id="swal-user-nama" class="form-control" value="${item.nama}"></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Role User</label><select id="swal-user-role" class="form-select">${optionsRole}</select></div>
+          <div class="col-md-6"><label class="form-label fw-bold">NIP/NPT</label><input id="swal-user-nip" class="form-control" value="${item.nip}"></div>
+          <div class="col-12"><label class="form-label fw-bold">Program Studi</label><select id="swal-user-prodi" class="form-select">${prodiSelectOptions}</select></div>
+        </div>
+      `,
+      showCancelButton: true, confirmButtonText: 'Simpan',
+      preConfirm: () => {
+        return { id: userId, username: document.getElementById('swal-user-uname').value, password: document.getElementById('swal-user-pass').value, nama: document.getElementById('swal-user-nama').value, role: document.getElementById('swal-user-role').value, nip: document.getElementById('swal-user-nip').value, prodi: document.getElementById('swal-user-prodi').value }
+      }
+    }).then(result => {
+      if (result.isConfirmed) {
+        google.script.run.withSuccessHandler(res => { if (res.success) { Swal.fire('Sukses', res.message, 'success'); isUserPayDropdownLoaded = false; loadAdminData(); } else { Swal.fire('Gagal', res.message, 'error'); } }).updateUser(currentUser.role, result.value);
+      }
+    });
+  }
+
+  function deleteIuranAction(trxId) {
+    Swal.fire({ title: 'Hapus Transaksi?', icon: 'warning', showCancelButton: true, confirmButtonColor: '#d33', confirmButtonText: 'Ya, Hapus!' }).then((result) => {
+      if (result.isConfirmed) {
+        google.script.run.withSuccessHandler(res => { if (res.success) { Swal.fire('Terhapus!', res.message, 'success'); loadAdminData(); } else { Swal.fire('Gagal', res.message, 'error'); } }).deleteIuran(currentUser.role, trxId);
+      }
+    });
+  }
+
+  function deleteAlokasiAction(alkId) {
+    Swal.fire({ title: 'Hapus Pencairan?', icon: 'warning', showCancelButton: true, confirmButtonColor: '#d33', confirmButtonText: 'Ya, Hapus!' }).then((result) => {
+      if (result.isConfirmed) {
+        google.script.run.withSuccessHandler(res => { if (res.success) { Swal.fire('Terhapus!', res.message, 'success'); loadAdminData(); } else { Swal.fire('Gagal', res.message, 'error'); } }).deleteAlokasi(currentUser.role, alkId);
+      }
+    });
+  }
+
+  function deleteUserAction(userId) {
+    Swal.fire({ title: 'Hapus User?', icon: 'warning', showCancelButton: true, confirmButtonColor: '#d33', confirmButtonText: 'Ya, Hapus!' }).then((result) => {
+      if (result.isConfirmed) {
+        google.script.run.withSuccessHandler(res => { if (res.success) { Swal.fire('Terhapus!', res.message, 'success'); isUserPayDropdownLoaded = false; loadAdminData(); } else { Swal.fire('Gagal', res.message, 'error'); } }).deleteUser(currentUser.role, userId);
+      }
+    });
+  }
+
+  function handlePayment(e) {
+    e.preventDefault();
+    const userVal = document.getElementById('select-user-pay').value.split('|');
+    const tahun = document.getElementById('select-tahun-pay').value;
+    const selectNominal = document.getElementById('select-nominal-pay').value;
+    let nominal = (selectNominal === 'lainnya') ? document.getElementById('pay-nominal-manual').value : selectNominal;
+
+    const selectedBulans = [];
+    document.querySelectorAll('.chk-bulan:checked').forEach(c => selectedBulans.push(c.value));
+
+    if (selectedBulans.length === 0 || !nominal || nominal <= 0) {
+      Swal.fire('Peringatan', 'Lengkapi data pembayaran dengan benar!', 'warning'); return;
+    }
+
+    google.script.run.withSuccessHandler(res => {
+      Swal.fire('Sukses', res.message, 'success');
+      document.querySelectorAll('.chk-bulan').forEach(c => c.checked = false);
+      loadAdminData();
+    }).saveIuran(userVal[0], userVal[1], selectedBulans, tahun, nominal, 'Iuran BATERAI');
+  }
+
+  function handleAlokasi(e) {
+    e.preventDefault();
+    const selectPeriode = document.getElementById('select-periode-alokasi');
+    const selectMhs = document.getElementById('select-mhs-alokasi');
+
+    if (!selectPeriode.value) { Swal.fire('Peringatan', 'Pilih periode beasiswa terlebih dahulu!', 'warning'); return; }
+    if (!selectMhs.value) { Swal.fire('Peringatan', 'Pilih mahasiswa pendaftar terlebih dahulu!', 'warning'); return; }
+
+    const arr = selectMhs.value.split('|');
+    const selectedPeriodeObj = (cachedAdminData.periodeList || []).find(p => p.id === selectPeriode.value);
+    const namaPeriodeStr = selectedPeriodeObj ? selectedPeriodeObj.semester + ' ' + selectedPeriodeObj.tahunAkademik : selectPeriode.value;
+
+    const payload = {
+      periodeId: selectPeriode.value,
+      nrp: arr[0],
+      mahasiswa: arr[1],
+      prodi: arr[2],
+      nominal: document.getElementById('alk-nominal').value,
+      periode: namaPeriodeStr
+    };
+
+    google.script.run.withSuccessHandler(res => {
+      Swal.fire('Sukses', res.message, 'success');
+      document.getElementById('form-alokasi').reset();
+      loadAdminData();
+    }).saveAlokasi(payload);
+  }
+
+  function generatePdf(e) {
+    if (e) e.preventDefault();
+    const btnPdf = document.getElementById('btn-pdf');
+    btnPdf.disabled = true; btnPdf.innerHTML = `<span class="spinner-border spinner-border-sm"></span> PDF...`;
+
+    google.script.run.withSuccessHandler(res => {
+      btnPdf.disabled = false; btnPdf.innerHTML = `<i class="bi bi-file-earmark-pdf"></i> PDF`;
+      if (res.success) {
+        const downloadLink = document.createElement("a");
+        downloadLink.href = `data:application/pdf;base64,${res.pdfBase64}`;
+        downloadLink.download = res.filename; downloadLink.click();
+        Swal.fire('Berhasil', 'Laporan PDF telah diunduh.', 'success');
+      } else { Swal.fire('Gagal', res.message, 'error'); }
+    }).generatePdfReport(document.getElementById('pdf-start-bulan').value, document.getElementById('pdf-start-tahun').value, document.getElementById('pdf-end-bulan').value, document.getElementById('pdf-end-tahun').value);
+  }
+
+  function showModalUser() {
+    let optionsRole = `<option value="user">User (Dosen/Tendik)</option>`;
+    if (currentUser.role === 'superadmin') optionsRole += `<option value="admin">Admin</option><option value="superadmin">Super Admin</option>`;
+    let prodiSelectOptions = globalProdiList.map(p => `<option value="${p.nama}">${p.nama}</option>`).join('');
+
+    Swal.fire({
+      title: 'Tambah User Baru', width: '650px',
+      html: `
+        <div class="row g-3 text-start">
+          <div class="col-md-6"><label class="form-label fw-bold">Username</label><input id="swal-user" class="form-control"></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Password</label><input id="swal-pass" type="password" class="form-control"></div>
+          <div class="col-12"><label class="form-label fw-bold">Nama Lengkap</label><input id="swal-nama" class="form-control"></div>
+          <div class="col-md-6"><label class="form-label fw-bold">Role User</label><select id="swal-role" class="form-select">${optionsRole}</select></div>
+          <div class="col-md-6"><label class="form-label fw-bold">NIP / NPT</label><input id="swal-nip" class="form-control"></div>
+          <div class="col-12"><label class="form-label fw-bold">Program Studi</label><select id="swal-prodi" class="form-select">${prodiSelectOptions}</select></div>
+        </div>
+      `,
+      showCancelButton: true, confirmButtonText: 'Simpan',
+      preConfirm: () => {
+        return { username: document.getElementById('swal-user').value, password: document.getElementById('swal-pass').value, nama: document.getElementById('swal-nama').value, role: document.getElementById('swal-role').value, nip: document.getElementById('swal-nip').value, prodi: document.getElementById('swal-prodi').value }
+      }
+    }).then((result) => {
+      if (result.isConfirmed) {
+        google.script.run.withSuccessHandler(res => { if (res.success) { Swal.fire('Sukses', res.message, 'success'); isUserPayDropdownLoaded = false; loadAdminData(); } else { Swal.fire('Gagal', res.message, 'error'); } }).addUser(currentUser.role, result.value);
+      }
+    });
+  }
+
+  function sortTable(tableId, colIdx) {
+    let table = document.getElementById(tableId);
+    let switching = true, dir = "asc", switchcount = 0;
+    while (switching) {
+      switching = false;
+      let rows = table.rows, shouldSwitch = false;
+      var i;
+      for (i = 1; i < (rows.length - 1); i++) {
+        let x = rows[i].getElementsByTagName("TD")[colIdx];
+        let y = rows[i + 1].getElementsByTagName("TD")[colIdx];
+        let xVal = x.innerHTML.toLowerCase(), yVal = y.innerHTML.toLowerCase();
+        if (dir == "asc" && xVal > yVal) { shouldSwitch = true; break; }
+        else if (dir == "desc" && xVal < yVal) { shouldSwitch = true; break; }
+      }
+      if (shouldSwitch) {
+        rows[i].parentNode.insertBefore(rows[i + 1], rows[i]); switching = true; switchcount++;
+      } else if (switchcount == 0 && dir == "asc") { dir = "desc"; switching = true; }
+    }
+  }
+
+  function formatRupiah(angka) { return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(angka); }
+  function formatRibuan(angka) { return new Intl.NumberFormat('id-ID').format(angka); }
+</script>

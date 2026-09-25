@@ -1,0 +1,953 @@
+// --- CONFIG & DATABASE CREATION ---
+const WA_ADMIN_NUMBER = "6281234567890";
+
+function doGet() {
+  initDatabase();
+  return HtmlService.createTemplateFromFile('Index')
+    .evaluate()
+    .setTitle('BATERAI - JTE (Beasiswa Akademis Teknologi Elektro untuk Riset & Akselerasi Inovatif)')
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function include(filename) {
+  return HtmlService.createHtmlOutputFromFile(filename).getContent();
+}
+
+function initDatabase() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Sheet Master Data Prodi
+  var sheetProdi = ss.getSheetByName('Prodi');
+  if (!sheetProdi) {
+    sheetProdi = ss.insertSheet('Prodi');
+    sheetProdi.appendRow(['ID Prodi', 'Nama Program Studi']);
+    sheetProdi.appendRow(['PRD-001', 'Teknologi Rekayasa Otomasi']);
+    sheetProdi.appendRow(['PRD-002', 'Teknologi Rekayasa Informatika Industri']);
+    sheetProdi.appendRow(['PRD-003', 'Teknik Listrik Industri']);
+  }
+
+  // Sheet Users
+  var sheetUser = ss.getSheetByName('Users');
+  if (!sheetUser) {
+    sheetUser = ss.insertSheet('Users');
+    sheetUser.appendRow(['ID', 'Username', 'Password', 'Nama', 'Role', 'NIP', 'Prodi']);
+    sheetUser.appendRow(['U-001', 'superadmin', '123', 'Super Admin JTE', 'superadmin', '-', 'Teknologi Rekayasa Otomasi']);
+    sheetUser.appendRow(['U-002', 'admin', '123', 'Admin Keuangan', 'admin', '-', 'Teknologi Rekayasa Informatika Industri']);
+    sheetUser.appendRow(['U-003', 'dosen1', '123', 'Dr. Ahmad, M.T.', 'user', '19800101', 'Teknik Listrik Industri']);
+  }
+
+  // Sheet Data Mahasiswa Profil
+  var sheetMhs = ss.getSheetByName('Mahasiswa');
+  if (!sheetMhs) {
+    sheetMhs = ss.insertSheet('Mahasiswa');
+    sheetMhs.appendRow(['ID Mhs', 'NRP', 'Nama Lengkap', 'Username', 'Password', 'No WA', 'Prodi', 'Semester', 'Status Akun', 'Tanggal Daftar']);
+  }
+
+  // Sheet Master Periode Beasiswa
+  var sheetPeriode = ss.getSheetByName('Periode');
+  if (!sheetPeriode) {
+    sheetPeriode = ss.insertSheet('Periode');
+    sheetPeriode.appendRow(['ID Periode', 'Nama Periode', 'Tahun Akademik', 'Semester', 'IsActive', 'Tanggal Dibuat']);
+    sheetPeriode.appendRow(['PER-001', 'Ganjil 2025/2026', '2025/2026', 'Ganjil', 'Aktif', new Date()]);
+  }
+
+  // Sheet Pendaftaran Beasiswa Mahasiswa Per Periode
+  var sheetPendaftaran = ss.getSheetByName('PendaftaranBeasiswa');
+  if (!sheetPendaftaran) {
+    sheetPendaftaran = ss.insertSheet('PendaftaranBeasiswa');
+    sheetPendaftaran.appendRow(['ID Reg', 'ID Periode', 'ID Mhs', 'NRP', 'Nama Mhs', 'Prodi', 'Semester', 'IPK', 'IPS', 'UKT', 'File Berkas ID', 'Status Beasiswa', 'Tanggal Submit']);
+  }
+
+  // Sheet Iuran
+  var sheetIuran = ss.getSheetByName('Iuran');
+  if (!sheetIuran) {
+    sheetIuran = ss.insertSheet('Iuran');
+    sheetIuran.appendRow(['ID Transaksi', 'ID User', 'Nama User', 'Tanggal Input', 'Periode Bulan', 'Tahun', 'Jumlah', 'Keterangan']);
+  }
+
+  // Sheet Alokasi
+  var sheetAlokasi = ss.getSheetByName('Alokasi');
+  if (!sheetAlokasi) {
+    sheetAlokasi = ss.insertSheet('Alokasi');
+    sheetAlokasi.appendRow(['ID Alokasi', 'NRP Mahasiswa', 'Nama Mahasiswa', 'Prodi', 'Nominal', 'Periode Pencairan', 'Tanggal Input']);
+  }
+
+  // Sheet Config
+  var sheetConfig = ss.getSheetByName('Config');
+  if (!sheetConfig) {
+    sheetConfig = ss.insertSheet('Config');
+    sheetConfig.appendRow(['Key', 'Value']);
+    sheetConfig.appendRow(['FORM_TEMPLATE_FILE_ID', '']);
+  }
+}
+
+// --- CRUD PERIODE BEASISWA (SUPERADMIN) ---
+function getPeriodeList() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Periode');
+  var data = sheet.getDataRange().getValues();
+  var list = [];
+  for (var i = 1; i < data.length; i++) {
+    list.push({
+      id: data[i][0],
+      nama: data[i][1],
+      tahunAkademik: data[i][2],
+      semester: data[i][3],
+      isActive: data[i][4] === 'Aktif',
+      tanggal: formatDate(data[i][5])
+    });
+  }
+  return list;
+}
+
+function getActivePeriode() {
+  var list = getPeriodeList();
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].isActive) return list[i];
+  }
+  return null;
+}
+
+function addPeriode(currentUserRole, nama, tahunAkademik, semester) {
+  if (currentUserRole !== 'superadmin') {
+    return { success: false, message: 'Akses Ditolak! Hanya Superadmin yang dapat menambah periode beasiswa.' };
+  }
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Periode');
+  var id = 'PER-' + String(sheet.getLastRow()).padStart(3, '0');
+  sheet.appendRow([id, nama, tahunAkademik, semester, 'Nonaktif', new Date()]);
+  return { success: true, message: 'Periode beasiswa berhasil ditambahkan.' };
+}
+
+function updatePeriode(currentUserRole, periodeId, nama, tahunAkademik, semester) {
+  if (currentUserRole !== 'superadmin') {
+    return { success: false, message: 'Akses Ditolak! Hanya Superadmin yang dapat memperbarui periode beasiswa.' };
+  }
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Periode');
+  var data = sheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === periodeId) {
+      sheet.getRange(i + 1, 2).setValue(nama);
+      sheet.getRange(i + 1, 3).setValue(tahunAkademik);
+      sheet.getRange(i + 1, 4).setValue(semester);
+      return { success: true, message: 'Data periode beasiswa berhasil diperbarui.' };
+    }
+  }
+  return { success: false, message: 'Periode tidak ditemukan.' };
+}
+
+function togglePeriodeStatus(currentUserRole, periodeId, targetStatus) {
+  if (currentUserRole !== 'superadmin') {
+    return { success: false, message: 'Akses Ditolak! Hanya Superadmin yang dapat mengubah status periode.' };
+  }
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Periode');
+  var data = sheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === periodeId) {
+      sheet.getRange(i + 1, 5).setValue(targetStatus);
+    } else if (targetStatus === 'Aktif') {
+      sheet.getRange(i + 1, 5).setValue('Nonaktif');
+    }
+  }
+  return { success: true, message: 'Status periode beasiswa berhasil diubah menjadi: ' + targetStatus };
+}
+
+function deletePeriode(currentUserRole, periodeId) {
+  if (currentUserRole !== 'superadmin') {
+    return { success: false, message: 'Akses Ditolak! Hanya Superadmin yang dapat menghapus periode beasiswa.' };
+  }
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Periode');
+  var data = sheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === periodeId) {
+      if (data[i][4] === 'Aktif') {
+        return { success: false, message: 'Tidak dapat menghapus periode yang sedang AKTIF! Harap nonaktifkan periode terlebih dahulu.' };
+      }
+      sheet.deleteRow(i + 1);
+      return { success: true, message: 'Periode beasiswa berhasil dihapus.' };
+    }
+  }
+  return { success: false, message: 'Periode tidak ditemukan.' };
+}
+
+// --- AUTHENTICATION ---
+function loginUser(username, password) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  var sheetUser = ss.getSheetByName('Users');
+  var dataUser = sheetUser.getDataRange().getValues();
+  for (var i = 1; i < dataUser.length; i++) {
+    if (dataUser[i][1] == username && dataUser[i][2] == password) {
+      return {
+        success: true,
+        user: { id: dataUser[i][0], username: dataUser[i][1], nama: dataUser[i][3], role: dataUser[i][4] }
+      };
+    }
+  }
+
+  var sheetMhs = ss.getSheetByName('Mahasiswa');
+  var dataMhs = sheetMhs.getDataRange().getValues();
+  for (var j = 1; j < dataMhs.length; j++) {
+    if (dataMhs[j][3] == username && dataMhs[j][4] == password) {
+      if (dataMhs[j][8] !== 'Aktif') {
+        return { success: false, message: 'Akun Anda belum diaktivasi oleh Admin Ibu Siti Aminah. Silahkan konfirmasi via WhatsApp.' };
+      }
+      return {
+        success: true,
+        user: { id: dataMhs[j][0], nrp: dataMhs[j][1], nama: dataMhs[j][2], username: dataMhs[j][3], role: 'mahasiswa' }
+      };
+    }
+  }
+
+  return { success: false, message: 'Username atau Password salah!' };
+}
+
+// --- MAHASISWA & PENDAFTARAN ---
+function registerMahasiswa(data) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Mahasiswa');
+  var rows = sheet.getDataRange().getValues();
+
+  for (var i = 1; i < rows.length; i++) {
+    if (rows[i][1] == data.nrp) return { success: false, message: 'NRP sudah terdaftar!' };
+    if (rows[i][3] == data.username) return { success: false, message: 'Username sudah digunakan!' };
+  }
+
+  var idMhs = 'MHS-' + String(sheet.getLastRow()).padStart(3, '0');
+  sheet.appendRow([idMhs, data.nrp, data.nama, data.username, data.password, data.noWa, data.prodi, data.semester, 'Pending', new Date()]);
+
+  var waMessage = encodeURIComponent(`Halo Ibu Siti Aminah, saya mahasiswa pendaftar BATERAI JTE:\nNama: ${data.nama}\nNRP: ${data.nrp}\nProdi: ${data.prodi}\nMohon bantuan untuk aktivasi akun pendaftaran saya. Terima kasih.`);
+  return {
+    success: true,
+    message: 'Pendaftaran akun berhasil! Silahkan konfirmasi aktivasi ke Ibu Siti Aminah.',
+    waLink: `https://wa.me/${WA_ADMIN_NUMBER}?text=${waMessage}`
+  };
+}
+
+function getMahasiswaDashboardData(mhsId) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetMhs = ss.getSheetByName('Mahasiswa');
+  var dataMhs = sheetMhs.getDataRange().getValues();
+
+  var mhsObj = null;
+  for (var i = 1; i < dataMhs.length; i++) {
+    if (dataMhs[i][0] == mhsId) {
+      mhsObj = {
+        id: dataMhs[i][0], nrp: dataMhs[i][1], nama: dataMhs[i][2], username: dataMhs[i][3],
+        noWa: dataMhs[i][5], prodi: dataMhs[i][6], semester: dataMhs[i][7], statusAkun: dataMhs[i][8],
+        tanggalDaftar: formatDate(dataMhs[i][9])
+      };
+      break;
+    }
+  }
+
+  var activePeriode = getActivePeriode();
+  var pendaftaranPeriodeIni = null;
+
+  if (activePeriode) {
+    var sheetReg = ss.getSheetByName('PendaftaranBeasiswa');
+    var dataReg = sheetReg.getDataRange().getValues();
+    for (var j = 1; j < dataReg.length; j++) {
+      if (dataReg[j][1] === activePeriode.id && dataReg[j][2] === mhsId) {
+        pendaftaranPeriodeIni = {
+          idReg: dataReg[j][0],
+          ipk: dataReg[j][7],
+          ips: dataReg[j][8],
+          ukt: dataReg[j][9],
+          fileBerkasId: dataReg[j][10],
+          statusBeasiswa: dataReg[j][11],
+          tanggalSubmit: formatDate(dataReg[j][12])
+        };
+        break;
+      }
+    }
+  }
+
+  var sheetConfig = ss.getSheetByName('Config');
+  var cfgData = sheetConfig.getDataRange().getValues();
+  var formTemplateId = '';
+  for (var c = 1; c < cfgData.length; c++) {
+    if (cfgData[c][0] === 'FORM_TEMPLATE_FILE_ID') {
+      formTemplateId = cfgData[c][1];
+      break;
+    }
+  }
+
+  return {
+    mahasiswa: mhsObj,
+    activePeriode: activePeriode,
+    pendaftaran: pendaftaranPeriodeIni,
+    formTemplateFileId: formTemplateId
+  };
+}
+
+function submitPendaftaranBeasiswa(mhsId, ipk, ips, ukt, fileData) {
+  try {
+    var activePeriode = getActivePeriode();
+    if (!activePeriode) return { success: false, message: 'Tidak ada periode beasiswa yang aktif saat ini.' };
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheetMhs = ss.getSheetByName('Mahasiswa');
+    var dataMhs = sheetMhs.getDataRange().getValues();
+    var mhsObj = null;
+
+    for (var i = 1; i < dataMhs.length; i++) {
+      if (dataMhs[i][0] == mhsId) {
+        mhsObj = { nrp: dataMhs[i][1], nama: dataMhs[i][2], prodi: dataMhs[i][6], semester: dataMhs[i][7] };
+        break;
+      }
+    }
+
+    var folder = getOrCreateFolder('BATERAI_Berkas_Mahasiswa');
+    var blob = Utilities.newBlob(Utilities.base64Decode(fileData.base64), fileData.mimeType, fileData.fileName);
+    var file = folder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+    var sheetReg = ss.getSheetByName('PendaftaranBeasiswa');
+    var dataReg = sheetReg.getDataRange().getValues();
+    var foundIndex = -1;
+
+    for (var j = 1; j < dataReg.length; j++) {
+      if (dataReg[j][1] === activePeriode.id && dataReg[j][2] === mhsId) {
+        foundIndex = j + 1;
+        break;
+      }
+    }
+
+    if (foundIndex !== -1) {
+      sheetReg.getRange(foundIndex, 8).setValue(Number(ipk));
+      sheetReg.getRange(foundIndex, 9).setValue(Number(ips));
+      sheetReg.getRange(foundIndex, 10).setValue(Number(ukt));
+      sheetReg.getRange(foundIndex, 11).setValue(file.getId());
+      sheetReg.getRange(foundIndex, 13).setValue(new Date());
+    } else {
+      var idReg = 'REG-' + new Date().getTime();
+      sheetReg.appendRow([
+        idReg, activePeriode.id, mhsId, mhsObj.nrp, mhsObj.nama,
+        mhsObj.prodi, mhsObj.semester, Number(ipk), Number(ips), Number(ukt),
+        file.getId(), 'Belum Diproses', new Date()
+      ]);
+    }
+
+    return { success: true, message: 'Berkas dan data pendaftaran beasiswa periode ' + activePeriode.nama + ' berhasil dikirim!' };
+  } catch (err) {
+    return { success: false, message: 'Gagal mengirim pendaftaran: ' + err.toString() };
+  }
+}
+
+function saveAlokasi(data) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Alokasi');
+  var id = 'ALK-' + new Date().getTime();
+  sheet.appendRow([id, data.nrp, data.mahasiswa, data.prodi, Number(data.nominal), data.periode, new Date()]);
+
+  // Update Status Pendaftaran Mahasiswa
+  var sheetReg = ss.getSheetByName('PendaftaranBeasiswa');
+  var dataReg = sheetReg.getDataRange().getValues();
+
+  for (var i = 1; i < dataReg.length; i++) {
+    if (dataReg[i][1] === data.periodeId && String(dataReg[i][3]) === String(data.nrp)) {
+      sheetReg.getRange(i + 1, 12).setValue('Diterima');
+      break;
+    }
+  }
+
+  return { success: true, message: 'Data alokasi berhasil dicatat & pencairan beasiswa selesai.' };
+}
+
+function updateStatusMahasiswa(idMhs, statusAkun, statusBeasiswa) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var activePeriode = getActivePeriode();
+
+  if (statusAkun) {
+    var sheetMhs = ss.getSheetByName('Mahasiswa');
+    var dataMhs = sheetMhs.getDataRange().getValues();
+    for (var i = 1; i < dataMhs.length; i++) {
+      if (dataMhs[i][0] == idMhs) {
+        sheetMhs.getRange(i + 1, 9).setValue(statusAkun);
+        break;
+      }
+    }
+  }
+
+  if (statusBeasiswa && activePeriode) {
+    var sheetReg = ss.getSheetByName('PendaftaranBeasiswa');
+    var dataReg = sheetReg.getDataRange().getValues();
+    for (var j = 1; j < dataReg.length; j++) {
+      if (dataReg[j][1] === activePeriode.id && dataReg[j][2] === idMhs) {
+        sheetReg.getRange(j + 1, 12).setValue(statusBeasiswa);
+        break;
+      }
+    }
+  }
+
+  return { success: true, message: 'Status mahasiswa berhasil diperbarui.' };
+}
+
+// MENGAMBIL SELURUH MAHASISWA YANG MENDAFTAR/TERDAFTAR DI SISTEM
+function getMahasiswaPendaftarList() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var activePeriode = getActivePeriode();
+
+  var sheetMhs = ss.getSheetByName('Mahasiswa');
+  var dataMhs = sheetMhs.getDataRange().getValues();
+
+  var sheetReg = ss.getSheetByName('PendaftaranBeasiswa');
+  var dataReg = sheetReg.getDataRange().getValues();
+
+  var list = [];
+  for (var i = 1; i < dataMhs.length; i++) {
+    var mId = dataMhs[i][0];
+    var mhsProfile = {
+      id: dataMhs[i][0],
+      nrp: dataMhs[i][1],
+      nama: dataMhs[i][2],
+      username: dataMhs[i][3],
+      password: dataMhs[i][4],
+      noWa: dataMhs[i][5],
+      prodi: dataMhs[i][6],
+      semester: dataMhs[i][7],
+      statusAkun: dataMhs[i][8],
+      tanggalDaftar: formatDate(dataMhs[i][9]),
+      pendaftaran: null
+    };
+
+    if (activePeriode) {
+      for (var j = 1; j < dataReg.length; j++) {
+        if (dataReg[j][1] === activePeriode.id && dataReg[j][2] === mId) {
+          mhsProfile.pendaftaran = {
+            idReg: dataReg[j][0],
+            idPeriode: dataReg[j][1],
+            ipk: dataReg[j][7],
+            ips: dataReg[j][8],
+            ukt: dataReg[j][9],
+            fileBerkasId: dataReg[j][10],
+            statusBeasiswa: dataReg[j][11],
+            tanggalSubmit: formatDate(dataReg[j][12])
+          };
+          break;
+        }
+      }
+    }
+    list.push(mhsProfile);
+  }
+
+  return list;
+}
+
+// --- ADMIN DASHBOARD DATA ---
+function getAdminDashboardData() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetIuran = ss.getSheetByName('Iuran');
+  var sheetUsers = ss.getSheetByName('Users');
+  var sheetAlokasi = ss.getSheetByName('Alokasi');
+
+  var kasStats = calculateKasTotal();
+
+  var historyIuran = [];
+  var iuranData = sheetIuran.getDataRange().getValues();
+  for (var i = iuranData.length - 1; i >= 1; i--) {
+    historyIuran.push({
+      trxId: iuranData[i][0], userId: iuranData[i][1], nama: iuranData[i][2],
+      tanggal: formatDate(iuranData[i][3]), bulan: iuranData[i][4], tahun: iuranData[i][5],
+      periode: iuranData[i][4] + ' ' + iuranData[i][5], jumlah: iuranData[i][6], keterangan: iuranData[i][7]
+    });
+  }
+
+  var usersList = [];
+  var userData = sheetUsers.getDataRange().getValues();
+  for (var u = 1; u < userData.length; u++) {
+    usersList.push({
+      id: userData[u][0], username: userData[u][1], password: userData[u][2],
+      nama: userData[u][3], role: userData[u][4], nip: userData[u][5], prodi: userData[u][6]
+    });
+  }
+
+  var alokasiList = [];
+  var alokasiData = sheetAlokasi.getDataRange().getValues();
+  for (var a = 1; a < alokasiData.length; a++) {
+    alokasiList.push({
+      id: alokasiData[a][0], nrp: alokasiData[a][1], mahasiswa: alokasiData[a][2],
+      prodi: alokasiData[a][3], nominal: alokasiData[a][4], periode: alokasiData[a][5],
+      tanggal: formatDate(alokasiData[a][6])
+    });
+  }
+
+  return {
+    totalMasuk: kasStats.totalMasuk,
+    totalKeluar: kasStats.totalKeluar,
+    saldoKasAkhir: kasStats.saldoKasAkhir,
+    historyIuran: historyIuran,
+    users: usersList,
+    alokasi: alokasiList,
+    mahasiswaPendaftar: getMahasiswaPendaftarList(),
+    periodeList: getPeriodeList(),
+    activePeriode: getActivePeriode(),
+    prodiList: getProdiList()
+  };
+}
+
+// HELPER UTILS
+function getProdiList() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Prodi');
+  var data = sheet.getDataRange().getValues();
+  var list = [];
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][1]) list.push({ id: data[i][0], nama: data[i][1] });
+  }
+  return list;
+}
+
+function addProdi(namaProdi) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Prodi');
+  var id = 'PRD-' + String(sheet.getLastRow()).padStart(3, '0');
+  sheet.appendRow([id, namaProdi]);
+  return { success: true, message: 'Program Studi berhasil ditambahkan.' };
+}
+
+function updateProdi(id, namaProdi) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Prodi');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] == id) {
+      sheet.getRange(i + 1, 2).setValue(namaProdi);
+      return { success: true, message: 'Program Studi berhasil diperbarui.' };
+    }
+  }
+  return { success: false, message: 'Prodi tidak ditemukan.' };
+}
+
+function deleteProdi(id) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Prodi');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] == id) {
+      sheet.deleteRow(i + 1);
+      return { success: true, message: 'Program Studi berhasil dihapus.' };
+    }
+  }
+  return { success: false, message: 'Prodi tidak ditemukan.' };
+}
+
+function uploadFormTemplate(fileData) {
+  try {
+    var folder = getOrCreateFolder('BATERAI_Form_Templates');
+    var blob = Utilities.newBlob(Utilities.base64Decode(fileData.base64), fileData.mimeType, fileData.fileName);
+    var file = folder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheetConfig = ss.getSheetByName('Config');
+    var data = sheetConfig.getDataRange().getValues();
+    var found = false;
+
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][0] === 'FORM_TEMPLATE_FILE_ID') {
+        sheetConfig.getRange(i + 1, 2).setValue(file.getId());
+        found = true; break;
+      }
+    }
+    if (!found) sheetConfig.appendRow(['FORM_TEMPLATE_FILE_ID', file.getId()]);
+
+    return { success: true, message: 'Formulir DOCX berhasil diunggah.', fileId: file.getId() };
+  } catch (err) {
+    return { success: false, message: 'Gagal mengunggah formulir: ' + err.toString() };
+  }
+}
+
+function getOrCreateFolder(folderName) {
+  var folders = DriveApp.getFoldersByName(folderName);
+  if (folders.hasNext()) return folders.next();
+  return DriveApp.createFolder(folderName);
+}
+
+function calculateKasTotal() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var dataIuran = ss.getSheetByName('Iuran').getDataRange().getValues();
+  var dataAlokasi = ss.getSheetByName('Alokasi').getDataRange().getValues();
+
+  var totalMasuk = 0, totalKeluar = 0;
+  for (var i = 1; i < dataIuran.length; i++) totalMasuk += (Number(dataIuran[i][6]) || 0);
+  for (var j = 1; j < dataAlokasi.length; j++) totalKeluar += (Number(dataAlokasi[j][4]) || 0);
+
+  return { totalMasuk: totalMasuk, totalKeluar: totalKeluar, saldoKasAkhir: totalMasuk - totalKeluar };
+}
+
+function getUserDashboardData(userId) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var dataIuran = ss.getSheetByName('Iuran').getDataRange().getValues();
+  var dataAlokasi = ss.getSheetByName('Alokasi').getDataRange().getValues();
+
+  var kasStats = calculateKasTotal();
+  var userTotalMasuk = 0;
+  var userHistory = [];
+
+  var bulanList = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+  var now = new Date();
+  var currentMonthName = bulanList[now.getMonth()];
+  var currentYearStr = String(now.getFullYear());
+  var isPaidCurrentMonth = false;
+
+  for (var i = 1; i < dataIuran.length; i++) {
+    var row = dataIuran[i];
+    var jumlah = Number(row[6]) || 0;
+
+    if (row[1] == userId) {
+      userTotalMasuk += jumlah;
+      userHistory.push({
+        trxId: row[0], tanggal: formatDate(row[3]), periode: row[4] + ' ' + row[5], jumlah: jumlah, keterangan: row[7]
+      });
+
+      if (String(row[4]).toLowerCase() === currentMonthName.toLowerCase() && String(row[5]) === currentYearStr) {
+        isPaidCurrentMonth = true;
+      }
+    }
+  }
+
+  var alokasiList = [];
+  for (var j = 1; j < dataAlokasi.length; j++) {
+    var aRow = dataAlokasi[j];
+    alokasiList.push({
+      id: aRow[0], nrp: aRow[1], mahasiswa: aRow[2], prodi: aRow[3], nominal: Number(aRow[4]) || 0, periode: aRow[5], tanggal: formatDate(aRow[6])
+    });
+  }
+
+  return {
+    userTotalMasuk: userTotalMasuk,
+    saldoKasAkhir: kasStats.saldoKasAkhir,
+    history: userHistory,
+    alokasi: alokasiList,
+    monitorUser: getUserMonitorData(userId),
+    statusBulanIni: isPaidCurrentMonth,
+    namaBulanIni: currentMonthName + ' ' + currentYearStr
+  };
+}
+
+function getUserMonitorData(userId) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var dataIuran = ss.getSheetByName('Iuran').getDataRange().getValues();
+  var bulanList = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+
+  var resultYears = [];
+  for (var y = 2026; y <= 2040; y++) {
+    var yearObj = { tahun: String(y), statusBulan: {}, totalTahun: 0 };
+    bulanList.forEach(function(b) { yearObj.statusBulan[b] = { lunas: false, jumlah: 0, tanggal: '' }; });
+    resultYears.push(yearObj);
+  }
+
+  for (var i = 1; i < dataIuran.length; i++) {
+    var row = dataIuran[i];
+    if (row[1] == userId) {
+      for (var k = 0; k < resultYears.length; k++) {
+        if (resultYears[k].tahun === String(row[5])) {
+          if (resultYears[k].statusBulan[row[4]]) {
+            resultYears[k].statusBulan[row[4]] = { lunas: true, jumlah: Number(row[6]) || 0, tanggal: formatDate(row[3]) };
+            resultYears[k].totalTahun += Number(row[6]) || 0;
+          }
+          break;
+        }
+      }
+    }
+  }
+  return resultYears;
+}
+
+function getMonitorIuranData(selectedYear) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var userData = ss.getSheetByName('Users').getDataRange().getValues();
+  var iuranData = ss.getSheetByName('Iuran').getDataRange().getValues();
+  var bulanList = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+
+  var monitorRows = [];
+  for (var u = 1; u < userData.length; u++) {
+    if (userData[u][4] === 'user') {
+      var userObj = { userId: userData[u][0], nama: userData[u][3], nip: userData[u][5], prodi: userData[u][6], statusBulan: {} };
+      bulanList.forEach(function(b) { userObj.statusBulan[b] = { lunas: false, jumlah: 0, tanggal: '' }; });
+      monitorRows.push(userObj);
+    }
+  }
+
+  for (var i = 1; i < iuranData.length; i++) {
+    var row = iuranData[i];
+    if (String(row[5]) === String(selectedYear)) {
+      for (var m = 0; m < monitorRows.length; m++) {
+        if (monitorRows[m].userId === row[1]) {
+          if (monitorRows[m].statusBulan[row[4]]) {
+            monitorRows[m].statusBulan[row[4]] = { lunas: true, jumlah: Number(row[6]) || 0, tanggal: formatDate(row[3]) };
+          }
+          break;
+        }
+      }
+    }
+  }
+  return monitorRows;
+}
+
+function addUser(currentUserRole, newUser) {
+  if (currentUserRole === 'admin' && (newUser.role === 'admin' || newUser.role === 'superadmin')) {
+    return { success: false, message: 'Akses ditolak!' };
+  }
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Users');
+  var id = 'U-' + String(sheet.getLastRow()).padStart(3, '0');
+  sheet.appendRow([id, newUser.username, newUser.password, newUser.nama, newUser.role, newUser.nip, newUser.prodi]);
+  return { success: true, message: 'User berhasil ditambahkan.' };
+}
+
+function updateUser(currentUserRole, user) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Users');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] == user.id) {
+      sheet.getRange(i + 1, 2).setValue(user.username);
+      sheet.getRange(i + 1, 3).setValue(user.password);
+      sheet.getRange(i + 1, 4).setValue(user.nama);
+      sheet.getRange(i + 1, 5).setValue(user.role);
+      sheet.getRange(i + 1, 6).setValue(user.nip);
+      sheet.getRange(i + 1, 7).setValue(user.prodi);
+      return { success: true, message: 'Data user berhasil diperbarui.' };
+    }
+  }
+  return { success: false, message: 'User tidak ditemukan.' };
+}
+
+function deleteUser(currentUserRole, userId) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Users');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] == userId) {
+      sheet.deleteRow(i + 1);
+      return { success: true, message: 'User berhasil dihapus.' };
+    }
+  }
+  return { success: false, message: 'User tidak ditemukan.' };
+}
+
+function saveIuran(userId, namaUser, bulans, tahun, nominalPerBulan, keterangan) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Iuran');
+  bulans.forEach(function(bulan) {
+    var trxId = 'TRX-' + new Date().getTime() + Math.floor(Math.random() * 100);
+    sheet.appendRow([trxId, userId, namaUser, new Date(), bulan, tahun, Number(nominalPerBulan), keterangan]);
+  });
+  return { success: true, message: 'Pembayaran iuran berhasil disimpan.' };
+}
+
+function updateIuran(trxId, userId, namaUser, bulan, tahun, jumlah) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Iuran');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] == trxId) {
+      sheet.getRange(i + 1, 2).setValue(userId);
+      sheet.getRange(i + 1, 3).setValue(namaUser);
+      sheet.getRange(i + 1, 5).setValue(bulan);
+      sheet.getRange(i + 1, 6).setValue(tahun);
+      sheet.getRange(i + 1, 7).setValue(Number(jumlah));
+      return { success: true, message: 'Data iuran berhasil diperbarui.' };
+    }
+  }
+  return { success: false, message: 'Transaksi tidak ditemukan.' };
+}
+
+function deleteIuran(currentUserRole, trxId) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Iuran');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] == trxId) {
+      sheet.deleteRow(i + 1);
+      return { success: true, message: 'Transaksi berhasil dihapus.' };
+    }
+  }
+  return { success: false, message: 'Transaksi tidak ditemukan.' };
+}
+
+function updateAlokasi(alkId, data) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Alokasi');
+  var sheetData = sheet.getDataRange().getValues();
+  for (var i = 1; i < sheetData.length; i++) {
+    if (sheetData[i][0] == alkId) {
+      sheet.getRange(i + 1, 2).setValue(data.nrp);
+      sheet.getRange(i + 1, 3).setValue(data.mahasiswa);
+      sheet.getRange(i + 1, 4).setValue(data.prodi);
+      sheet.getRange(i + 1, 5).setValue(Number(data.nominal));
+      sheet.getRange(i + 1, 6).setValue(data.periode);
+      return { success: true, message: 'Data pencairan berhasil diperbarui.' };
+    }
+  }
+  return { success: false, message: 'Data pencairan tidak ditemukan.' };
+}
+
+function deleteAlokasi(currentUserRole, alkId) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Alokasi');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] == alkId) {
+      sheet.deleteRow(i + 1);
+      return { success: true, message: 'Data pencairan berhasil dihapus.' };
+    }
+  }
+  return { success: false, message: 'Data tidak ditemukan.' };
+}
+
+function getReportData(startBulan, startTahun, endBulan, endTahun) {
+  var monthNames = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+  var startIdx = monthNames.indexOf(startBulan);
+  var endIdx = monthNames.indexOf(endBulan);
+
+  var startDate = new Date(Number(startTahun), startIdx, 1);
+  var endDate = new Date(Number(endTahun), endIdx + 1, 0, 23, 59, 59);
+
+  if (startDate > endDate) return { success: false, message: 'Periode awal tidak boleh lebih besar dari periode akhir.' };
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var dataIuran = ss.getSheetByName('Iuran').getDataRange().getValues();
+  var dataAlokasi = ss.getSheetByName('Alokasi').getDataRange().getValues();
+
+  var filteredIuran = [], totalIuranPeriod = 0;
+  for (var i = 1; i < dataIuran.length; i++) {
+    var r = dataIuran[i];
+    var bIdx = monthNames.indexOf(String(r[4]));
+    var tVal = Number(r[5]);
+    if (bIdx !== -1 && tVal) {
+      var itemDate = new Date(tVal, bIdx, 1);
+      if (itemDate >= startDate && itemDate <= endDate) {
+        filteredIuran.push({ id: r[0], nama: r[2], tanggal: formatDate(r[3]), periode: r[4] + ' ' + r[5], jumlah: Number(r[6]) || 0 });
+        totalIuranPeriod += (Number(r[6]) || 0);
+      }
+    }
+  }
+
+  var filteredAlokasi = [], totalAlokasiPeriod = 0;
+  for (var j = 1; j < dataAlokasi.length; j++) {
+    var a = dataAlokasi[j];
+    var aDate = new Date(a[6]);
+    if (aDate >= startDate && aDate <= endDate) {
+      filteredAlokasi.push({ id: a[0], nrp: a[1], mahasiswa: a[2], prodi: a[3], nominal: Number(a[4]) || 0, periode: a[5], tanggal: formatDate(a[6]) });
+      totalAlokasiPeriod += (Number(a[4]) || 0);
+    }
+  }
+
+  return {
+    success: true, iuran: filteredIuran, alokasi: filteredAlokasi,
+    totalIuran: totalIuranPeriod, totalAlokasi: totalAlokasiPeriod, selisih: totalIuranPeriod - totalAlokasiPeriod,
+    startBulan: startBulan, startTahun: startTahun, endBulan: endBulan, endTahun: endTahun
+  };
+}
+
+function getPreviewReport(startBulan, startTahun, endBulan, endTahun) {
+  return getReportData(startBulan, startTahun, endBulan, endTahun);
+}
+
+function generatePdfReport(startBulan, startTahun, endBulan, endTahun) {
+  var report = getReportData(startBulan, startTahun, endBulan, endTahun);
+  if (!report.success) return report;
+
+  var htmlContent = `
+    <html>
+      <head>
+        <style>
+          body { font-family: sans-serif; margin: 20px; color: #333; }
+          h2, h4 { text-align: center; margin-bottom: 2px; }
+          p.acronym { text-align: center; font-size: 11px; font-weight: bold; color: #1a5276; margin-top: 0; margin-bottom: 10px; }
+          p.subtitle { text-align: center; font-size: 12px; color: #666; margin-top: 0; }
+          table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 11px; }
+          th, td { border: 1px solid #999; padding: 6px; text-align: left; }
+          th { background-color: #f2f2f2; }
+          .text-right { text-align: right; }
+          .summary-box { border: 1px solid #4a90e2; background-color: #eef5fc; padding: 10px; margin-top: 20px; font-size: 12px; }
+        </style>
+      </head>
+      <body>
+        <h2>LAPORAN KEUANGAN BATERAI JTE</h2>
+        <p class="acronym">(Beasiswa Akademis Teknologi Elektro untuk Riset & Akselerasi Inovatif)</p>
+        <p class="subtitle">Jurusan Teknologi Elektro<br>Periode: ${startBulan} ${startTahun} s/d ${endBulan} ${endTahun}</p>
+
+        <h4>1. Pemasukan Iuran Dosen & Tendik</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>No</th><th>ID Transaksi</th><th>Nama Penyumbang</th><th>Tanggal</th><th>Periode</th><th class="text-right">Jumlah</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+  if (report.iuran.length === 0) {
+    htmlContent += `<tr><td colspan="6" style="text-align:center;">Tidak ada data iuran pada periode ini.</td></tr>`;
+  } else {
+    for (var k = 0; k < report.iuran.length; k++) {
+      htmlContent += `
+        <tr>
+          <td>${k + 1}</td><td>${report.iuran[k].id}</td><td>${report.iuran[k].nama}</td><td>${report.iuran[k].tanggal}</td><td>${report.iuran[k].periode}</td><td class="text-right">Rp ${report.iuran[k].jumlah.toLocaleString('id-ID')}</td>
+        </tr>`;
+    }
+  }
+
+  htmlContent += `
+          </tbody>
+        </table>
+
+        <h4>2. Pencairan Beasiswa Mahasiswa</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>No</th><th>NRP</th><th>Nama Mahasiswa</th><th>Prodi</th><th>Periode Academic</th><th>Tanggal</th><th class="text-right">Nominal</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+  if (report.alokasi.length === 0) {
+    htmlContent += `<tr><td colspan="7" style="text-align:center;">Tidak ada data pencairan pada periode ini.</td></tr>`;
+  } else {
+    for (var m = 0; m < report.alokasi.length; m++) {
+      htmlContent += `
+        <tr>
+          <td>${m + 1}</td><td>${report.alokasi[m].nrp}</td><td>${report.alokasi[m].mahasiswa}</td><td>${report.alokasi[m].prodi}</td><td>${report.alokasi[m].periode}</td><td>${report.alokasi[m].tanggal}</td><td class="text-right">Rp ${report.alokasi[m].nominal.toLocaleString('id-ID')}</td>
+        </tr>`;
+    }
+  }
+
+  htmlContent += `
+          </tbody>
+        </table>
+
+        <div class="summary-box">
+          <strong>Ringkasan Keuangan Periode Ini:</strong><br>
+          - Total Iuran Masuk: <strong>Rp ${report.totalIuran.toLocaleString('id-ID')}</strong><br>
+          - Total Pencairan Beasiswa: <strong>Rp ${report.totalAlokasi.toLocaleString('id-ID')}</strong><br>
+          - Selisih Kas Periode Ini: <strong>Rp ${report.selisih.toLocaleString('id-ID')}</strong>
+        </div>
+      </body>
+    </html>`;
+
+  var blob = Utilities.newBlob(htmlContent, 'text/html', 'Laporan_Iuran_BATERAI.html');
+  var pdfBlob = blob.getAs('application/pdf');
+
+  return {
+    success: true,
+    pdfBase64: Utilities.base64Encode(pdfBlob.getBytes()),
+    filename: 'Laporan_BATERAI_' + startBulan + startTahun + '_sd_' + endBulan + endTahun + '.pdf'
+  };
+}
+
+function formatDate(date) {
+  if (!date) return '-';
+  var d = new Date(date);
+  return d.toLocaleDateString('id-ID', { year: 'numeric', month: 'short', day: 'numeric' });
+}
